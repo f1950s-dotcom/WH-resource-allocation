@@ -89,10 +89,10 @@ export const updateSystemCondition = (key: string, value: string) =>
     return api.put('/api/conditions/system', { conditions: updated }).then(res => res.data);
   });
 
-// Volume Plans  →  /api/volume-plans/{date}
+// Volume Plans  →  /api/volume-plans/{date}  ※BodyキーはBE側で "entries"
 export const getVolumePlans = (date: string) => api.get(`/api/volume-plans/${date}`).then(r => r.data);
 export const saveVolumePlans = (date: string, plans: { volume_type: string; time_slot_start: string; volume: number }[]) =>
-  api.put(`/api/volume-plans/${date}`, { plans }).then(r => r.data);
+  api.put(`/api/volume-plans/${date}`, { entries: plans }).then(r => r.data);
 
 // Volume Expansions  →  /api/volume-expansions/{date}
 export const getVolumeExpansions = (date: string) => api.get(`/api/volume-expansions/${date}`).then(r => r.data);
