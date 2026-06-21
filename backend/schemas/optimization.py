@@ -1,0 +1,35 @@
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, List, Any
+
+
+class OptimizationAssignmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    assignment_id: str
+    result_id: str
+    employee_id: str
+    process_id: Optional[str]
+    time_slot_start: str
+    slot_type: str
+    is_overtime: bool
+    slot_cost: float
+
+
+class OptimizationResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    result_id: str
+    plan_date: str
+    result_type: str
+    total_cost: float
+    total_overtime_cost: float
+    total_process_moves: int
+    is_deadline_met: bool
+    deadline_violations: Optional[str]
+    calculated_at: str
+    is_selected: bool
+
+
+class OptimizationResultDetail(BaseModel):
+    result: OptimizationResultResponse
+    assignments: List[OptimizationAssignmentResponse]
