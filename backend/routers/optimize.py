@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from database import get_db
-from models import OptimizationResult, OptimizationAssignment
+from models import OptimizationResult, OptimizationAssignment, Employee, Process
 from schemas import OptimizationResultResponse, OptimizationResultDetail, OptimizationAssignmentResponse
 from services.optimizer.fastest import FastestOptimizer
 from services.optimizer.cheapest import CheapestOptimizer
@@ -64,6 +64,8 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
         OptimizationAssignment.employee_id,
         OptimizationAssignment.time_slot_start,
     ).all()
+    emp_names = {e.employee_id: e.name for e in db.query(Employee).all()}
+    proc_names = {p.process_id: p.process_name for p in db.query(Process).all()}
     return OptimizationResultDetail(
         result=OptimizationResultResponse(
             result_id=result.result_id,
@@ -82,7 +84,9 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
                 assignment_id=a.assignment_id,
                 result_id=a.result_id,
                 employee_id=a.employee_id,
+                employee_name=emp_names.get(a.employee_id, a.employee_id),
                 process_id=a.process_id,
+                process_name=proc_names.get(a.process_id) if a.process_id else None,
                 time_slot_start=a.time_slot_start,
                 slot_type=a.slot_type,
                 is_overtime=bool(a.is_overtime),

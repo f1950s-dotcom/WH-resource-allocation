@@ -36,7 +36,7 @@ export default function Optimization() {
   });
 
   const selectMut = useMutation({
-    mutationFn: (resultId: string) => selectOptimizationResult(resultId),
+    mutationFn: (resultId: string) => selectOptimizationResult(resultId, date),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['optResults', date] }); navigate(`/shift?date=${date}`); },
   });
 

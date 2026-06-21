@@ -8,7 +8,9 @@ class OptimizationAssignmentResponse(BaseModel):
     assignment_id: str
     result_id: str
     employee_id: str
+    employee_name: Optional[str] = None
     process_id: Optional[str]
+    process_name: Optional[str] = None
     time_slot_start: str
     slot_type: str
     is_overtime: bool
