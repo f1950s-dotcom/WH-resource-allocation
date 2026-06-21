@@ -187,6 +187,32 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db)):
     return proc
 
 
+# ─── Process Connections ──────────────────────────────────────────────────────
+
+@router.get("/processes/connections", response_model=List[ProcessConnectionResponse])
+def get_connections(db: Session = Depends(get_db)):
+    return db.query(ProcessConnection).all()
+
+
+@router.put("/processes/connections", response_model=List[ProcessConnectionResponse])
+def update_connections(body: ProcessConnectionsUpdate, db: Session = Depends(get_db)):
+
+    db.query(ProcessConnection).delete()
+    connections = []
+    for c in body.connections:
+        conn = ProcessConnection(
+            connection_id=str(uuid.uuid4()),
+            from_process_id=c.from_process_id,
+            to_process_id=c.to_process_id,
+        )
+        db.add(conn)
+        connections.append(conn)
+    db.commit()
+    for c in connections:
+        db.refresh(c)
+    return connections
+
+
 @router.get("/processes/{process_id}", response_model=ProcessResponse)
 def get_process(process_id: str, db: Session = Depends(get_db)):
     proc = db.query(Process).filter(Process.process_id == process_id).first()
@@ -224,31 +250,6 @@ def delete_process(process_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Process not found")
     db.delete(proc)
     db.commit()
-
-
-# ─── Process Connections ──────────────────────────────────────────────────────
-
-@router.get("/processes/connections", response_model=List[ProcessConnectionResponse])
-def get_connections(db: Session = Depends(get_db)):
-    return db.query(ProcessConnection).all()
-
-
-@router.put("/processes/connections", response_model=List[ProcessConnectionResponse])
-def update_connections(body: ProcessConnectionsUpdate, db: Session = Depends(get_db)):
-    db.query(ProcessConnection).delete()
-    connections = []
-    for c in body.connections:
-        conn = ProcessConnection(
-            connection_id=str(uuid.uuid4()),
-            from_process_id=c.from_process_id,
-            to_process_id=c.to_process_id,
-        )
-        db.add(conn)
-        connections.append(conn)
-    db.commit()
-    for c in connections:
-        db.refresh(c)
-    return connections
 
 
 # ─── Volume Conversion Rules ──────────────────────────────────────────────────
