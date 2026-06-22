@@ -46,6 +46,9 @@ class LeastMoveOptimizer(BaseOptimizer):
         else:
             self._refine(assignments)
 
+        # Send unneeded expensive workers home (only if moves don't worsen)
+        self._dismiss_expensive_workers(assignments)
+
         score = self.calc_score(assignments)
         self._save_result(assignments, score)
 

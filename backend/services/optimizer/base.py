@@ -710,5 +710,89 @@ class BaseOptimizer:
         for emp_id in list(assignments.keys()):
             assignments[emp_id] = new_assignments.get(emp_id, {})
 
+    def _dismiss_expensive_workers(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """
+        Send expensive workers home when they are not needed.
+
+        Throughput depends on *headcount* per slot, not on who fills the seat.
+        So if every WORK slot of an expensive employee can be handed to a
+        currently-idle cheaper employee (same slot), the per-slot headcount —
+        and therefore the process-chain flow and deadlines — is unchanged while
+        total cost drops and the expensive employee ends up with zero work
+        (i.e. goes home).
+
+        We attempt a *full* evacuation per employee, most-expensive first, and
+        commit only if the strategy objective improves. This makes the dismissal
+        safe for every result type (cost / completion time / moves).
+        """
+        emps_by_wage = sorted(
+            self.active_employees, key=lambda e: -float(e.hourly_wage)
+        )
+
+        improved = True
+        while improved:
+            improved = False
+            for emp in emps_by_wage:
+                eid = emp.employee_id
+                work_assigns = [
+                    a for a in assignments[eid].values() if a.slot_type == "WORK"
+                ]
+                if not work_assigns:
+                    continue
+
+                base_obj = self._objective(assignments)
+
+                # Plan a relocation of every work slot to an idle cheaper worker.
+                # Apply tentatively; revert wholesale if evacuation fails or the
+                # objective does not improve.
+                moved: List[Tuple[str, str, Assignment]] = []  # (target_id, slot, prev)
+                vacated: List[Tuple[str, Assignment]] = []      # (slot, removed)
+                success = True
+
+                for a in sorted(work_assigns, key=lambda x: x.time_slot_start):
+                    slot = a.time_slot_start
+                    pid = a.process_id
+                    # Free the expensive worker's seat first
+                    removed = assignments[eid].pop(slot)
+                    vacated.append((slot, removed))
+
+                    target = None
+                    for other in reversed(emps_by_wage):  # cheapest first
+                        oid = other.employee_id
+                        if oid == eid:
+                            continue
+                        if float(other.hourly_wage) >= float(emp.hourly_wage):
+                            continue
+                        self.patterns_evaluated += 1
+                        if self.can_assign(other, pid, slot, assignments[oid]):
+                            target = other
+                            break
+
+                    if target is None:
+                        success = False
+                        break
+
+                    tid = target.employee_id
+                    is_ot = self._is_overtime_slot(target, slot, assignments[tid])
+                    cost = self._calc_slot_cost(target, slot, assignments[tid])
+                    assignments[tid][slot] = Assignment(
+                        employee_id=tid,
+                        process_id=pid,
+                        time_slot_start=slot,
+                        slot_type="WORK",
+                        is_overtime=is_ot,
+                        slot_cost=cost,
+                    )
+                    moved.append((tid, slot, removed))
+
+                if success and self._objective(assignments) < base_obj - 1e-9:
+                    improved = True  # expensive worker is now fully off the clock
+                else:
+                    # Revert everything
+                    for tid, slot, _ in moved:
+                        del assignments[tid][slot]
+                    for slot, removed in vacated:
+                        assignments[eid][slot] = removed
+
     def run(self):
         raise NotImplementedError

@@ -36,6 +36,9 @@ class CheapestOptimizer(BaseOptimizer):
         else:
             self._refine(assignments)
 
+        # Send unneeded expensive workers home (cost drops, headcount unchanged)
+        self._dismiss_expensive_workers(assignments)
+
         score = self.calc_score(assignments)
         self._save_result(assignments, score)
 

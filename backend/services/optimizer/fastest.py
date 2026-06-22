@@ -34,5 +34,8 @@ class FastestOptimizer(BaseOptimizer):
         self._run_flow(assignments)
         self._refine(assignments)
 
+        # Send unneeded expensive workers home (completion time unchanged)
+        self._dismiss_expensive_workers(assignments)
+
         score = self.calc_score(assignments)
         self._save_result(assignments, score)
