@@ -16,10 +16,10 @@ const HEAT_COLORS = [
 
 function heatColor(val: number): string {
   if (val <= 0) return HEAT_COLORS[0];
-  if (val < 0.5) return HEAT_COLORS[1];
-  if (val < 1) return HEAT_COLORS[2];
-  if (val < 2) return HEAT_COLORS[3];
-  if (val < 3) return HEAT_COLORS[4];
+  if (val < 50) return HEAT_COLORS[1];
+  if (val < 200) return HEAT_COLORS[2];
+  if (val < 500) return HEAT_COLORS[3];
+  if (val < 1000) return HEAT_COLORS[4];
   return HEAT_COLORS[5];
 }
 
@@ -43,10 +43,10 @@ export default function VolumeExpansion() {
 
   const getValue = (procId: string, slot: string) => {
     const e = expansions.find((x: any) => x.process_id === procId && x.time_slot_start === slot);
-    return e?.required_person_slots ?? 0;
+    return e?.process_volume ?? 0;
   };
 
-  const procTotal = (procId: string) => expansions.filter((e: any) => e.process_id === procId).reduce((s: number, e: any) => s + e.required_person_slots, 0);
+  const procTotal = (procId: string) => expansions.filter((e: any) => e.process_id === procId).reduce((s: number, e: any) => s + e.process_volume, 0);
 
   return (
     <div className="p-6">
@@ -85,16 +85,16 @@ export default function VolumeExpansion() {
                       const val = getValue(pid, slot);
                       return (
                         <td key={pid} className={`border px-2 py-1.5 text-center ${heatColor(val)}`}>
-                          {val > 0 ? <span className={val >= 2 ? 'text-white' : 'text-gray-800'}>{val.toFixed(1)}</span> : ''}
+                          {val > 0 ? <span className={val >= 500 ? 'text-white' : 'text-gray-800'}>{val.toLocaleString()}</span> : ''}
                         </td>
                       );
                     })}
                   </tr>
                 ))}
                 <tr className="font-semibold bg-gray-50">
-                  <td className="border px-3 py-2">合計(人時)</td>
+                  <td className="border px-3 py-2">合計(作業量)</td>
                   {procIds.map(pid => (
-                    <td key={pid} className="border px-2 py-2 text-center">{(procTotal(pid) * 0.25).toFixed(1)}</td>
+                    <td key={pid} className="border px-2 py-2 text-center">{procTotal(pid).toLocaleString()}</td>
                   ))}
                 </tr>
               </tbody>
@@ -102,8 +102,8 @@ export default function VolumeExpansion() {
           </div>
 
           <div className="flex items-center gap-4 text-xs text-gray-500 mb-4">
-            <span>必要人員数（凡例）：</span>
-            {['0', '〜0.5', '〜1', '〜2', '〜3', '3超'].map((lbl, i) => (
+            <span>作業量（凡例）：</span>
+            {['0', '〜50', '〜200', '〜500', '〜1000', '1000超'].map((lbl, i) => (
               <div key={lbl} className="flex items-center gap-1">
                 <div className={`w-4 h-4 rounded ${HEAT_COLORS[i]} border`} />
                 <span>{lbl}</span>
