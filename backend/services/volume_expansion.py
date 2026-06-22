@@ -45,8 +45,6 @@ def expand_volume(plan_date: str, db: Session) -> List[VolumeExpansion]:
     # 根元工程 = 接続の下流側になっていない工程
     root_pids = [pid for pid in active_processes if pid not in downstream_pids]
 
-    slot_duration_hours = 15.0 / 60.0
-
     db.query(VolumeExpansion).filter(VolumeExpansion.plan_date == plan_date).delete()
 
     expansions: List[VolumeExpansion] = []
@@ -64,13 +62,7 @@ def expand_volume(plan_date: str, db: Session) -> List[VolumeExpansion]:
             if source_type != plan.volume_type:
                 continue
 
-            proc = active_processes[pid]
-            bp = float(proc.base_productivity)
-
             process_volume = volume * rate
-            required_person_slots = (
-                process_volume / (bp * slot_duration_hours) if bp > 0 else 0.0
-            )
 
             exp = VolumeExpansion(
                 expansion_id=str(uuid.uuid4()),
@@ -79,7 +71,7 @@ def expand_volume(plan_date: str, db: Session) -> List[VolumeExpansion]:
                 time_slot_start=slot,
                 process_volume=round(process_volume, 2),
                 carry_over_volume=0.0,
-                required_person_slots=round(required_person_slots, 3),
+                required_person_slots=0.0,
                 calculated_at=now,
             )
             db.add(exp)
