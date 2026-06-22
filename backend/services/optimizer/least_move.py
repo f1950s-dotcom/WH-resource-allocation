@@ -12,63 +12,28 @@ from .cheapest import CheapestOptimizer
 class LeastMoveOptimizer(BaseOptimizer):
     RESULT_TYPE = "LEAST_MOVE"
 
+    def _emp_sort_key(self, emp, process_id, slot, assignments):
+        # Prefer employees continuing on the same process (fewer moves),
+        # then cheaper effective wage.
+        emp_assignments = assignments[emp.employee_id]
+        work_slots = sorted(
+            [a.time_slot_start for a in emp_assignments.values() if a.slot_type == "WORK"]
+        )
+        same_process = False
+        if work_slots:
+            last_a = emp_assignments.get(work_slots[-1])
+            if last_a and last_a.process_id == process_id:
+                same_process = True
+        is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
+        wage = float(emp.hourly_wage)
+        return (0 if same_process else 1, wage * (self.overtime_wage_rate if is_ot else 1.0))
+
     def run(self):
-        # Start with same approach as cheapest
         assignments: Dict[str, Dict[str, Assignment]] = {
             emp.employee_id: {} for emp in self.active_employees
         }
-
         self._assign_lunch_breaks(assignments)
-
-        all_process_ids = self.process_order
-        all_slots = sorted(set(
-            slot
-            for proc_slots in self.required_slots.values()
-            for slot in proc_slots.keys()
-        ))
-
-        for slot in all_slots:
-            quotas = self._compute_slot_quotas(slot, all_process_ids)
-            for process_id in all_process_ids:
-                needed = quotas.get(process_id, 0)
-                if needed <= 0:
-                    continue
-
-                def sort_key(emp):
-                    emp_assignments = assignments[emp.employee_id]
-                    # Prefer continuing on same process (fewer moves)
-                    prev_slots = sorted(
-                        [a.time_slot_start for a in emp_assignments.values() if a.slot_type == "WORK"],
-                    )
-                    same_process = False
-                    if prev_slots:
-                        last_slot = prev_slots[-1]
-                        last_a = emp_assignments.get(last_slot)
-                        if last_a and last_a.process_id == process_id:
-                            same_process = True
-                    is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
-                    wage = float(emp.hourly_wage)
-                    return (0 if same_process else 1, wage * (self.overtime_wage_rate if is_ot else 1.0))
-
-                sorted_emps = sorted(self.active_employees, key=sort_key)
-
-                assigned_count = 0
-                for emp in sorted_emps:
-                    if assigned_count >= needed:
-                        break
-                    emp_assignments = assignments[emp.employee_id]
-                    if self.can_assign(emp, process_id, slot, emp_assignments):
-                        is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
-                        cost = self._calc_slot_cost(emp, slot, emp_assignments)
-                        emp_assignments[slot] = Assignment(
-                            employee_id=emp.employee_id,
-                            process_id=process_id,
-                            time_slot_start=slot,
-                            slot_type="WORK",
-                            is_overtime=is_ot,
-                            slot_cost=cost,
-                        )
-                        assigned_count += 1
+        self._run_flow(assignments)
 
         # Local search: resolve isolated process assignments (飛び地解消)
         self._resolve_isolated_slots(assignments, max_iter=200)

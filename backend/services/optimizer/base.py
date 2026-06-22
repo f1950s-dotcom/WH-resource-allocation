@@ -15,7 +15,7 @@ from models import (
     VolumeExpansion, ProcessDeadlineCondition,
     SystemCondition, SkillLevelProductivityRate,
     OptimizationResult, OptimizationAssignment,
-    ProcessConnection,
+    ProcessConnection, Process, VolumeConversionRule,
 )
 
 
@@ -113,19 +113,39 @@ class BaseOptimizer:
             slots = _generate_slots(cond.work_start_time, cond.work_end_time, self.slot_minutes)
             self.employee_available_slots[emp.employee_id] = slots
 
-        # Load volume expansions
+        # Load active processes and their base productivity
+        self.process_map: Dict[str, Process] = {
+            p.process_id: p for p in db.query(Process).filter(Process.is_active == 1).all()
+        }
+        self.base_prod: Dict[str, float] = {
+            pid: float(p.base_productivity) for pid, p in self.process_map.items()
+        }
+        self.slot_hours = self.slot_minutes / 60.0
+
+        # Load conversion rates: process_id -> rate (used to convert upstream
+        # throughput into this process's work volume)
+        self.conv_rate: Dict[str, float] = {
+            r.process_id: float(r.conversion_rate)
+            for r in db.query(VolumeConversionRule).all()
+        }
+
+        # Load volume expansions (root processes only): work volume per slot
+        # {process_id: {time_slot: process_volume}}
         expansions = db.query(VolumeExpansion).filter(
             VolumeExpansion.plan_date == plan_date
         ).all()
-        # {process_id: {time_slot: required_person_slots}}
-        self.required_slots: Dict[str, Dict[str, float]] = {}
+        self.root_volume: Dict[str, Dict[str, float]] = {}
         for e in expansions:
-            self.required_slots.setdefault(e.process_id, {})[e.time_slot_start] = float(e.required_person_slots)
+            self.root_volume.setdefault(e.process_id, {})[e.time_slot_start] = float(e.process_volume)
 
-        # Build topological order of processes (upstream first)
+        # Process chain: upstream -> [downstream], and topological order
         connections = db.query(ProcessConnection).all()
         upstream_of: Dict[str, str] = {c.to_process_id: c.from_process_id for c in connections}
-        all_pids = list(self.required_slots.keys())
+        self.downstream_of: Dict[str, List[str]] = {}
+        for c in connections:
+            self.downstream_of.setdefault(c.from_process_id, []).append(c.to_process_id)
+
+        all_pids = list(self.process_map.keys())
         visited: set = set()
         topo_order: List[str] = []
 
@@ -134,7 +154,7 @@ class BaseOptimizer:
                 return
             visited.add(pid)
             up = upstream_of.get(pid)
-            if up and up in self.required_slots:
+            if up and up in self.process_map:
                 _visit(up)
             topo_order.append(pid)
 
@@ -348,37 +368,121 @@ class BaseOptimizer:
         self.db.commit()
         return result_id
 
-    def _compute_slot_quotas(self, slot: str, process_ids: List[str]) -> Dict[str, int]:
+    def _demand_to_quotas(self, demand: Dict[str, float]) -> Dict[str, int]:
         """
-        Bottleneck-balanced worker quota per process for a slot.
+        Bottleneck-balanced worker quota per process for one slot.
 
-        Rule: every process that has pending work gets at least 1 worker.
-        Remaining workers are split proportionally by required_person_slots.
-        This prevents upstream processes from monopolising all workers when
-        downstream processes also have work to do.
+        `demand[pid]` = number of person-slots needed to fully clear the backlog
+        of process `pid` in this slot. Every process with work gets at least 1
+        worker; the remaining workforce is split proportionally to demand. This
+        prevents an upstream process from monopolising all workers while a
+        downstream process also has work waiting.
         """
-        slot_req = {
-            pid: self.required_slots.get(pid, {}).get(slot, 0.0)
-            for pid in process_ids
-        }
-        active = [pid for pid in process_ids if slot_req[pid] > 0]
+        active = [pid for pid, d in demand.items() if d > 0]
         if not active:
             return {}
 
         n_workers = len(self.active_employees)
-        # Guarantee 1 worker per active process (if workers available)
         guaranteed = min(len(active), n_workers)
-        remainder = n_workers - guaranteed
+        remainder = max(0, n_workers - guaranteed)
+        total = sum(demand[pid] for pid in active)
 
-        total_req = sum(slot_req[pid] for pid in active)
         quotas: Dict[str, int] = {}
         for pid in active:
-            prop = round(remainder * slot_req[pid] / total_req) if total_req > 0 else 0
-            quota = 1 + prop
-            # Never exceed what's actually needed
-            quotas[pid] = min(quota, math.ceil(slot_req[pid]))
-
+            prop = round(remainder * demand[pid] / total) if total > 0 else 0
+            quotas[pid] = min(1 + prop, math.ceil(demand[pid]))
         return quotas
+
+    def _emp_sort_key(self, emp, process_id: str, slot: str,
+                      assignments: Dict[str, Dict[str, Assignment]]):
+        """Employee priority for assignment. Overridden per strategy."""
+        return (float(emp.hourly_wage),)
+
+    def _run_flow(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """
+        Forward flow simulation tied to assignment.
+
+        Time advances slot by slot. Within each slot, processes are handled
+        upstream-first. A process can only work on volume that has actually
+        arrived (root volume at its registered slot, or upstream throughput from
+        the previous slot via the 15-min lag). Workers are assigned according to
+        the strategy's sort key, the actual throughput is computed from the
+        assigned headcount, and the leftover backlog carries to the next slot.
+        Downstream work is generated only from real upstream throughput.
+        """
+        # Candidate working slots: union of every employee's available slots
+        # plus the slots where root volume arrives.
+        slot_set: Set[str] = set()
+        for slots in self.employee_available_slots.values():
+            slot_set.update(slots)
+        for vmap in self.root_volume.values():
+            slot_set.update(vmap.keys())
+        all_slots = sorted(slot_set)
+
+        backlog: Dict[str, float] = {pid: 0.0 for pid in self.process_order}
+        # incoming[pid][slot] = work volume arriving at that slot
+        incoming: Dict[str, Dict[str, float]] = {pid: {} for pid in self.process_order}
+        for pid, vmap in self.root_volume.items():
+            for slot, vol in vmap.items():
+                incoming.setdefault(pid, {})[slot] = incoming.get(pid, {}).get(slot, 0.0) + vol
+
+        for idx, slot in enumerate(all_slots):
+            next_slot = all_slots[idx + 1] if idx + 1 < len(all_slots) else None
+
+            # 1. Add newly arrived work to each process's backlog
+            for pid in self.process_order:
+                backlog[pid] += incoming[pid].get(slot, 0.0)
+
+            # 2. Demand (person-slots) to clear each backlog this slot
+            demand: Dict[str, float] = {}
+            for pid in self.process_order:
+                bp = self.base_prod.get(pid, 0.0)
+                cap_per_person = bp * self.slot_hours
+                if backlog[pid] > 1e-9 and cap_per_person > 0:
+                    demand[pid] = backlog[pid] / cap_per_person
+            quotas = self._demand_to_quotas(demand)
+
+            # 3. Assign workers and compute actual throughput, upstream first
+            for pid in self.process_order:
+                need = quotas.get(pid, 0)
+                if need <= 0:
+                    continue
+                sorted_emps = sorted(
+                    self.active_employees,
+                    key=lambda e: self._emp_sort_key(e, pid, slot, assignments),
+                )
+                assigned = 0
+                for emp in sorted_emps:
+                    if assigned >= need:
+                        break
+                    emp_assignments = assignments[emp.employee_id]
+                    if self.can_assign(emp, pid, slot, emp_assignments):
+                        is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
+                        cost = self._calc_slot_cost(emp, slot, emp_assignments)
+                        emp_assignments[slot] = Assignment(
+                            employee_id=emp.employee_id,
+                            process_id=pid,
+                            time_slot_start=slot,
+                            slot_type="WORK",
+                            is_overtime=is_ot,
+                            slot_cost=cost,
+                        )
+                        assigned += 1
+
+                # Actual throughput from real headcount
+                capacity = assigned * self.base_prod.get(pid, 0.0) * self.slot_hours
+                throughput = min(backlog[pid], capacity)
+                backlog[pid] -= throughput
+
+                # 4. Propagate to downstream with 15-min lag
+                if throughput > 0 and next_slot:
+                    for down_pid in self.downstream_of.get(pid, []):
+                        if down_pid not in incoming:
+                            continue
+                        rate = self.conv_rate.get(down_pid, 1.0)
+                        incoming[down_pid][next_slot] = (
+                            incoming[down_pid].get(next_slot, 0.0) + throughput * rate
+                        )
 
     def run(self):
         raise NotImplementedError
