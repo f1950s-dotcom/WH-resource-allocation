@@ -1,7 +1,14 @@
 """
-物量展開サービス
-工程接続に基づいてトポロジカル順に展開。
-上流工程の処理量が下流工程の投入量になる。
+物量展開サービス（フローシミュレーション方式）
+
+考え方:
+  - 末端の入庫量/出庫量は「最上流工程」の作業を生成する起点。
+  - 各工程は自分の変換係数を「入力源の量」に掛けて自工程の作業量を得る。
+      入力源 = 最上流工程: 生の入庫/出庫量
+              下流工程  : 1つ上流工程が "前スロットで処理した量"（15分のタイムラグ）
+  - 例) 入庫100, 入庫→入荷=0.5 なら 入荷の作業発生=50。
+        入荷が50処理し, 入荷→棚入=2.0 なら 棚入の作業発生=100。
+  - 各スロットで処理しきれなかった作業は backlog として次スロットへ滞留し続ける。
 """
 from datetime import datetime
 import uuid
@@ -21,19 +28,18 @@ def _min_to_time(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _topological_sort(process_ids: List[str], connections: List) -> List[str]:
+def _topological_sort(process_ids: List[str], upstream_of: Dict[str, str]) -> List[str]:
     """Return process_ids in topological order (upstream first)."""
-    downstream_of: Dict[str, str] = {c.to_process_id: c.from_process_id for c in connections}
     visited = set()
-    order = []
+    order: List[str] = []
 
     def visit(pid: str):
         if pid in visited:
             return
         visited.add(pid)
-        upstream = downstream_of.get(pid)
-        if upstream and upstream in process_ids:
-            visit(upstream)
+        up = upstream_of.get(pid)
+        if up and up in process_ids:
+            visit(up)
         order.append(pid)
 
     for pid in process_ids:
@@ -48,15 +54,17 @@ def expand_volume(plan_date: str, db: Session) -> List[VolumeExpansion]:
     if not plans:
         return []
 
+    # 生の入出庫量: (volume_type, slot) -> volume
     plan_map: Dict[tuple, float] = {}
     for p in plans:
         plan_map[(p.volume_type, p.time_slot_start)] = float(p.volume)
 
+    # 変換係数: process_id -> (source_type, rate)
     rules = db.query(VolumeConversionRule).all()
     rule_map: Dict[str, tuple] = {r.process_id: (r.source_type, float(r.conversion_rate)) for r in rules}
 
+    # 工程接続: 下流 -> 上流
     connections = db.query(ProcessConnection).all()
-    # downstream -> upstream
     upstream_of: Dict[str, str] = {c.to_process_id: c.from_process_id for c in connections}
 
     active_processes = {
@@ -70,90 +78,97 @@ def expand_volume(plan_date: str, db: Session) -> List[VolumeExpansion]:
     plan_slots = sorted(set(p.time_slot_start for p in plans))
     first_min = _time_to_min(plan_slots[0])
 
-    # Generate slots from first plan slot to 23:30 to accommodate carry-over
+    # 滞留分を処理しきるため 23:30 まで枠を生成
     all_slots: List[str] = []
     t = first_min
     while t <= 23 * 60 + 30:
         all_slots.append(_min_to_time(t))
         t += 15
 
-    # Topological order
-    process_order = _topological_sort(list(active_processes.keys()), connections)
+    process_order = _topological_sort(list(active_processes.keys()), upstream_of)
+
+    slot_duration_hours = 15.0 / 60.0
+
+    # 工程ごとの定数を準備
+    base_prod: Dict[str, float] = {}
+    max_cap: Dict[str, float] = {}    # 全員投入時の1スロット最大処理量（上限の目安）
+    is_root: Dict[str, bool] = {}
+    own_rate: Dict[str, float] = {}
+    root_source: Dict[str, str] = {}
+
+    for pid in process_order:
+        proc = active_processes[pid]
+        bp = float(proc.base_productivity)
+        base_prod[pid] = bp
+        max_cap[pid] = employee_count * bp * slot_duration_hours
+        up = upstream_of.get(pid)
+        root = not (up and up in active_processes)
+        is_root[pid] = root
+        rate = rule_map[pid][1] if pid in rule_map else 1.0
+        own_rate[pid] = rate
+        if root and pid in rule_map:
+            root_source[pid] = rule_map[pid][0]
 
     db.query(VolumeExpansion).filter(VolumeExpansion.plan_date == plan_date).delete()
 
     expansions: List[VolumeExpansion] = []
-    slot_duration_hours = 15.0 / 60.0
 
-    # throughput[process_id][slot] = items actually processed (passed to downstream)
-    throughput: Dict[str, Dict[str, float]] = {}
+    # シミュレーション状態
+    backlog: Dict[str, float] = {pid: 0.0 for pid in process_order}
+    throughput: Dict[str, Dict[str, float]] = {pid: {} for pid in process_order}
 
-    for process_id in process_order:
-        proc = active_processes.get(process_id)
-        if proc is None:
-            continue
+    for idx, slot in enumerate(all_slots):
+        prev_slot = all_slots[idx - 1] if idx > 0 else None
 
-        base_productivity = float(proc.base_productivity)
-        # Max throughput per slot with all employees
-        max_throughput_per_slot = employee_count * base_productivity * slot_duration_hours
+        for pid in process_order:  # 上流から順に
+            # --- このスロットで新規に発生する作業量 ---
+            if is_root[pid]:
+                src = root_source.get(pid)
+                incoming = plan_map.get((src, slot), 0.0) * own_rate[pid] if src else 0.0
+            else:
+                up = upstream_of[pid]
+                # 上流が「前スロットで処理した量」に自工程の係数を掛ける（15分ラグ）
+                up_processed_prev = throughput[up].get(prev_slot, 0.0) if prev_slot else 0.0
+                incoming = up_processed_prev * own_rate[pid]
 
-        # Determine input source
-        upstream_id = upstream_of.get(process_id)
-        has_conversion_rule = process_id in rule_map
+            backlog[pid] += incoming
+            work_present = backlog[pid]
 
-        if upstream_id and upstream_id in throughput:
-            # Input comes from upstream process's throughput
-            input_map: Dict[str, float] = throughput[upstream_id]
-            def get_input(slot: str) -> float:
-                return input_map.get(slot, 0.0)
-        elif has_conversion_rule:
-            # Root process: input from raw volume plan
-            source_type, conversion_rate = rule_map[process_id]
-            def get_input(slot: str, _st=source_type, _cr=conversion_rate) -> float:
-                return plan_map.get((_st, slot), 0.0) * _cr
-        else:
-            # No input source defined, skip
-            continue
-
-        carry_over = 0.0
-        process_throughput: Dict[str, float] = {}
-
-        for slot in all_slots:
-            new_volume = get_input(slot)
-            total_volume = new_volume + carry_over
-
-            if total_volume <= 0:
-                carry_over = 0.0
-                process_throughput[slot] = 0.0
+            if work_present <= 1e-9:
+                throughput[pid][slot] = 0.0
                 continue
 
-            if base_productivity > 0:
-                required_person_slots = total_volume / (base_productivity * slot_duration_hours)
-            else:
-                required_person_slots = 0.0
+            # 全作業を当スロットで捌くのに必要な人員スロット数
+            bp = base_prod[pid]
+            required_person_slots = work_present / (bp * slot_duration_hours) if bp > 0 else 0.0
 
-            # How much can be processed with all employees (upper bound)
-            processed = min(total_volume, max_throughput_per_slot)
-            carry_over = max(0.0, total_volume - processed)
-            process_throughput[slot] = processed
+            # 全員投入した場合に処理できる上限（目安）。残りは滞留。
+            processed = min(work_present, max_cap[pid])
+            backlog[pid] = work_present - processed
+            throughput[pid][slot] = processed
 
             exp = VolumeExpansion(
                 expansion_id=str(uuid.uuid4()),
                 plan_date=plan_date,
-                process_id=process_id,
+                process_id=pid,
                 time_slot_start=slot,
-                process_volume=round(total_volume, 2),
-                carry_over_volume=round(carry_over, 2),
+                process_volume=round(work_present, 2),       # そのスロットに存在する作業量
+                carry_over_volume=round(backlog[pid], 2),     # 処理後の滞留量
                 required_person_slots=round(required_person_slots, 3),
                 calculated_at=now,
             )
             db.add(exp)
             expansions.append(exp)
 
-            if carry_over <= 0 and new_volume <= 0:
+        # 全工程の backlog が枯れ、かつ以降の新規入力も無ければ終了
+        if all(backlog[pid] <= 1e-9 for pid in process_order):
+            future_input = any(
+                plan_map.get((root_source.get(pid), fs), 0.0) > 0
+                for pid in process_order if is_root[pid] and pid in root_source
+                for fs in all_slots[idx + 1:]
+            )
+            if not future_input:
                 break
-
-        throughput[process_id] = process_throughput
 
     db.commit()
     for e in expansions:
