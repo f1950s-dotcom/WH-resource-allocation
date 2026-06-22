@@ -112,6 +112,10 @@ export default function Optimization() {
                     <span className="text-gray-500">工程移動回数</span>
                     <span>{r.total_process_moves} 回</span>
                   </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">検証パターン数</span>
+                    <span>{(r.patterns_evaluated ?? 0).toLocaleString()} 通り</span>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => navigate(`/optimization/${r.result_id}?date=${date}`)} className="flex-1 border border-gray-300 text-gray-600 text-xs py-2 rounded hover:bg-gray-50">

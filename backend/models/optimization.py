@@ -15,6 +15,7 @@ class OptimizationResult(Base):
     deadline_violations = Column(Text)
     calculated_at = Column(Text, nullable=False)
     is_selected = Column(Integer, nullable=False, default=0)
+    patterns_evaluated = Column(Integer, nullable=False, default=0)
 
 
 class OptimizationAssignment(Base):

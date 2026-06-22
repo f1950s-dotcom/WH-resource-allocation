@@ -30,6 +30,7 @@ class OptimizationResultResponse(BaseModel):
     deadline_violations: Optional[str]
     calculated_at: str
     is_selected: bool
+    patterns_evaluated: int = 0
 
 
 class OptimizationResultDetail(BaseModel):

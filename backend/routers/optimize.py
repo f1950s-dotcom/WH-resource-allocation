@@ -78,6 +78,7 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
             deadline_violations=result.deadline_violations,
             calculated_at=result.calculated_at,
             is_selected=bool(result.is_selected),
+            patterns_evaluated=result.patterns_evaluated,
         ),
         assignments=[
             OptimizationAssignmentResponse(

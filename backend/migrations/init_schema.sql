@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS optimization_results (
     is_deadline_met       INTEGER NOT NULL DEFAULT 0,
     deadline_violations   TEXT,
     calculated_at         TEXT NOT NULL,
-    is_selected           INTEGER NOT NULL DEFAULT 0
+    is_selected           INTEGER NOT NULL DEFAULT 0,
+    patterns_evaluated    INTEGER NOT NULL DEFAULT 0
 );
 
 -- 最適化結果明細

@@ -64,6 +64,8 @@ class BaseOptimizer:
         self.plan_date = plan_date
         self.db = db
         self.slot_minutes = 15
+        # Number of candidate placements examined by the heuristic
+        self.patterns_evaluated = 0
 
         # Load system conditions
         conds = {c.condition_key: c.condition_value for c in db.query(SystemCondition).all()}
@@ -348,6 +350,7 @@ class BaseOptimizer:
             deadline_violations=json.dumps(score["deadline_violations"]) if score["deadline_violations"] else None,
             calculated_at=now,
             is_selected=0,
+            patterns_evaluated=self.patterns_evaluated,
         )
         self.db.add(result)
 
@@ -456,6 +459,8 @@ class BaseOptimizer:
                     if assigned >= need:
                         break
                     emp_assignments = assignments[emp.employee_id]
+                    # Each examined candidate counts as one evaluated pattern
+                    self.patterns_evaluated += 1
                     if self.can_assign(emp, pid, slot, emp_assignments):
                         is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
                         cost = self._calc_slot_cost(emp, slot, emp_assignments)

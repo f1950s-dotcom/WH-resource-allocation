@@ -60,6 +60,7 @@ class CheapestOptimizer(BaseOptimizer):
                 if emp.employee_id == worst_emp_id:
                     continue
                 emp_assignments = assignments[emp.employee_id]
+                self.patterns_evaluated += 1
                 if self.can_assign(emp, worst_process_id, worst_slot, emp_assignments):
                     new_cost = self._calc_slot_cost(emp, worst_slot, emp_assignments)
                     if new_cost < worst_cost:

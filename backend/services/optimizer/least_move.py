@@ -101,6 +101,7 @@ class LeastMoveOptimizer(BaseOptimizer):
                             if not adjacent_slots:
                                 continue
 
+                            self.patterns_evaluated += 1
                             if self.can_assign(other_emp, target_process, target_slot, other_assignments):
                                 old_moves_emp = self._count_moves(emp_assignments)
                                 old_moves_other = self._count_moves(other_assignments)

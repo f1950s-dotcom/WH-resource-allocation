@@ -36,3 +36,11 @@ def init_db():
         for stmt in statements:
             conn.execute(text(stmt))
         conn.commit()
+
+        # Lightweight migrations for existing databases
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(optimization_results)"))]
+        if "patterns_evaluated" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN patterns_evaluated INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
