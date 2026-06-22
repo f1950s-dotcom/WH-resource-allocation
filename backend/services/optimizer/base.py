@@ -348,5 +348,37 @@ class BaseOptimizer:
         self.db.commit()
         return result_id
 
+    def _compute_slot_quotas(self, slot: str, process_ids: List[str]) -> Dict[str, int]:
+        """
+        Bottleneck-balanced worker quota per process for a slot.
+
+        Rule: every process that has pending work gets at least 1 worker.
+        Remaining workers are split proportionally by required_person_slots.
+        This prevents upstream processes from monopolising all workers when
+        downstream processes also have work to do.
+        """
+        slot_req = {
+            pid: self.required_slots.get(pid, {}).get(slot, 0.0)
+            for pid in process_ids
+        }
+        active = [pid for pid in process_ids if slot_req[pid] > 0]
+        if not active:
+            return {}
+
+        n_workers = len(self.active_employees)
+        # Guarantee 1 worker per active process (if workers available)
+        guaranteed = min(len(active), n_workers)
+        remainder = n_workers - guaranteed
+
+        total_req = sum(slot_req[pid] for pid in active)
+        quotas: Dict[str, int] = {}
+        for pid in active:
+            prop = round(remainder * slot_req[pid] / total_req) if total_req > 0 else 0
+            quota = 1 + prop
+            # Never exceed what's actually needed
+            quotas[pid] = min(quota, math.ceil(slot_req[pid]))
+
+        return quotas
+
     def run(self):
         raise NotImplementedError

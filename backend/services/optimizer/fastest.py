@@ -31,12 +31,11 @@ class FastestOptimizer(BaseOptimizer):
         ))
 
         for slot in all_slots:
+            quotas = self._compute_slot_quotas(slot, all_process_ids)
             for process_id in all_process_ids:
-                required = self.required_slots.get(process_id, {}).get(slot, 0.0)
-                if required <= 0:
+                needed = quotas.get(process_id, 0)
+                if needed <= 0:
                     continue
-
-                needed = math.ceil(required)
 
                 # Sort employees: highest skill for this process first, then lowest wage
                 def sort_key(emp):
