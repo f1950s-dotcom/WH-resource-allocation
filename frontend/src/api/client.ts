@@ -99,7 +99,7 @@ export const getVolumeExpansions = (date: string) => api.get(`/api/volume-expans
 export const runVolumeExpansion = (date: string) => api.post(`/api/volume-plans/${date}/expand`).then(r => r.data);
 
 // Optimization  →  /api/optimize/{date}
-export const runOptimization = (date: string) => api.post(`/api/optimize/${date}`).then(r => r.data);
+export const runOptimization = (date: string, method: string = 'GREEDY') => api.post(`/api/optimize/${date}`, null, { params: { method } }).then(r => r.data);
 export const getOptimizationResults = (date: string) => api.get(`/api/optimize/${date}/results`).then(r => r.data);
 export const getOptimizationAssignments = (resultId: string, date?: string) => {
   // date is needed for the route. Fall back to today.

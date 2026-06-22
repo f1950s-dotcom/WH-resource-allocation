@@ -4,7 +4,7 @@
 """
 from typing import Dict
 
-from .base import BaseOptimizer, Assignment
+from .base import BaseOptimizer, Assignment, _parse_time
 
 
 class FastestOptimizer(BaseOptimizer):
@@ -15,12 +15,24 @@ class FastestOptimizer(BaseOptimizer):
         skill = self.skills.get(emp.employee_id, {}).get(process_id, 0)
         return (-skill, float(emp.hourly_wage))
 
+    def _objective(self, assignments):
+        # Primary: finish as early as possible; tiebreak: cheaper
+        latest = 0
+        for ea in assignments.values():
+            for a in ea.values():
+                if a.slot_type == "WORK":
+                    end = _parse_time(a.time_slot_start) + self.slot_minutes
+                    latest = max(latest, end)
+        cost = self.calc_score(assignments)["total_cost"]
+        return latest * 1_000_000 + cost
+
     def run(self):
         assignments: Dict[str, Dict[str, Assignment]] = {
             emp.employee_id: {} for emp in self.active_employees
         }
         self._assign_lunch_breaks(assignments)
         self._run_flow(assignments)
+        self._refine(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)

@@ -22,6 +22,7 @@ export default function Optimization() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [date, setDate] = useState(params.get('date') ?? today());
+  const [method, setMethod] = useState<'GREEDY' | 'ANNEALING' | 'ORTOOLS'>('GREEDY');
   const [polling, setPolling] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -31,7 +32,7 @@ export default function Optimization() {
   });
 
   const runMut = useMutation({
-    mutationFn: () => runOptimization(date),
+    mutationFn: () => runOptimization(date, method),
     onSuccess: () => { setPolling(true); },
   });
 
@@ -60,6 +61,14 @@ export default function Optimization() {
         <div>
           <label className="block text-xs text-gray-500 mb-1">対象日</label>
           <input type="date" value={date} onChange={e => setDate(e.target.value)} className="border rounded px-3 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">計算エンジン</label>
+          <select value={method} onChange={e => setMethod(e.target.value as any)} className="border rounded px-3 py-1.5 text-sm" disabled={polling}>
+            <option value="GREEDY">貪欲＋局所探索（高速）</option>
+            <option value="ANNEALING">焼きなまし法（探索多・中速）</option>
+            <option value="ORTOOLS">OR-Toolsソルバー（最適志向・低速）</option>
+          </select>
         </div>
         <button
           onClick={() => { runMut.mutate(); }}

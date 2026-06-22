@@ -19,6 +19,9 @@ class CheapestOptimizer(BaseOptimizer):
         skill = self.skills.get(emp.employee_id, {}).get(process_id, 0)
         return (effective, -skill)
 
+    def _objective(self, assignments):
+        return self.calc_score(assignments)["total_cost"]
+
     def run(self):
         assignments: Dict[str, Dict[str, Assignment]] = {
             emp.employee_id: {} for emp in self.active_employees
@@ -26,9 +29,12 @@ class CheapestOptimizer(BaseOptimizer):
         self._assign_lunch_breaks(assignments)
         self._run_flow(assignments)
 
-        # Replace expensive assignments with cheaper alternatives
-        # (same process/slot -> headcount and flow unchanged)
-        self._local_search_cheapest(assignments, max_iter=200)
+        if self.method == "GREEDY":
+            # Replace expensive assignments with cheaper alternatives
+            # (same process/slot -> headcount and flow unchanged)
+            self._local_search_cheapest(assignments, max_iter=200)
+        else:
+            self._refine(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)

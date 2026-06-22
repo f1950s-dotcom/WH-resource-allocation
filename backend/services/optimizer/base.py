@@ -60,9 +60,10 @@ class Assignment:
 class BaseOptimizer:
     RESULT_TYPE: str = ""
 
-    def __init__(self, plan_date: str, db: Session):
+    def __init__(self, plan_date: str, db: Session, method: str = "GREEDY"):
         self.plan_date = plan_date
         self.db = db
+        self.method = method  # GREEDY / ANNEALING / ORTOOLS
         self.slot_minutes = 15
         # Number of candidate placements examined by the heuristic
         self.patterns_evaluated = 0
@@ -488,6 +489,226 @@ class BaseOptimizer:
                         incoming[down_pid][next_slot] = (
                             incoming[down_pid].get(next_slot, 0.0) + throughput * rate
                         )
+
+    # ------------------------------------------------------------------
+    # Objective and refinement engines (shared by all result types)
+    # ------------------------------------------------------------------
+    def _objective(self, assignments: Dict[str, Dict[str, Assignment]]) -> float:
+        """Scalar score to minimise. Lower is better. Overridden per strategy."""
+        return self.calc_score(assignments)["total_cost"]
+
+    def _eligible_employees(self, process_id: str, slot: str,
+                            assignments: Dict[str, Dict[str, Assignment]]):
+        """Employees who could legally take (process_id, slot) right now."""
+        out = []
+        for emp in self.active_employees:
+            if self.can_assign(emp, process_id, slot, assignments[emp.employee_id]):
+                out.append(emp)
+        return out
+
+    def _refine(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """Apply the selected refinement engine to a flow-feasible solution."""
+        if self.method == "ANNEALING":
+            self._refine_annealing(assignments)
+        elif self.method == "ORTOOLS":
+            self._refine_ortools(assignments)
+        # GREEDY: strategy-specific local search runs in the subclass
+
+    def _refine_annealing(self, assignments: Dict[str, Dict[str, Assignment]],
+                          iterations: int = 6000):
+        """
+        Simulated annealing over employee selection.
+
+        The staffing plan (how many people work each process/slot) is kept
+        fixed so the process-chain flow stays valid. A move re-assigns one
+        existing seat to a different eligible employee. Worse moves are
+        accepted with probability exp(-delta/T) to escape local optima.
+        """
+        import math as _math
+        import random
+
+        rng = random.Random(42)
+
+        # Seats currently filled (employee can change, process/slot stays)
+        seats = [
+            (emp_id, slot, a.process_id)
+            for emp_id, ea in assignments.items()
+            for slot, a in ea.items()
+            if a.slot_type == "WORK"
+        ]
+        if not seats:
+            return
+
+        cur_obj = self._objective(assignments)
+        T = max(1.0, cur_obj * 0.05)
+        cooling = 0.9995
+
+        for _ in range(iterations):
+            seat_idx = rng.randrange(len(seats))
+            cur_emp_id, slot, process_id = seats[seat_idx]
+
+            # Vacate the seat temporarily
+            removed = assignments[cur_emp_id].pop(slot)
+
+            candidates = self._eligible_employees(process_id, slot, assignments)
+            candidates = [e for e in candidates if e.employee_id != cur_emp_id]
+            self.patterns_evaluated += 1
+
+            if not candidates:
+                assignments[cur_emp_id][slot] = removed  # restore
+                T *= cooling
+                continue
+
+            new_emp = rng.choice(candidates)
+            is_ot = self._is_overtime_slot(new_emp, slot, assignments[new_emp.employee_id])
+            cost = self._calc_slot_cost(new_emp, slot, assignments[new_emp.employee_id])
+            assignments[new_emp.employee_id][slot] = Assignment(
+                employee_id=new_emp.employee_id,
+                process_id=process_id,
+                time_slot_start=slot,
+                slot_type="WORK",
+                is_overtime=is_ot,
+                slot_cost=cost,
+            )
+
+            new_obj = self._objective(assignments)
+            delta = new_obj - cur_obj
+            if delta <= 0 or rng.random() < _math.exp(-delta / T):
+                # Accept
+                cur_obj = new_obj
+                seats[seat_idx] = (new_emp.employee_id, slot, process_id)
+            else:
+                # Revert
+                del assignments[new_emp.employee_id][slot]
+                assignments[cur_emp_id][slot] = removed
+
+            T *= cooling
+
+    def _refine_ortools(self, assignments: Dict[str, Dict[str, Assignment]],
+                        time_limit_sec: float = 10.0):
+        """
+        Exact-ish employee selection via OR-Tools CP-SAT.
+
+        Keeps the staffing plan (seats per process/slot) fixed and chooses the
+        cheapest legal employee for each seat, modelling overtime as a convex
+        per-employee cost. Falls back to the existing solution if OR-Tools is
+        not installed or no feasible model is found.
+        """
+        try:
+            from ortools.sat.python import cp_model
+        except ImportError:
+            return  # OR-Tools not available; keep current solution
+
+        # Collect seats and reserved (lunch/legal break) slots per employee
+        seats = []  # (slot, process_id)
+        reserved: Dict[str, set] = {e.employee_id: set() for e in self.active_employees}
+        for emp_id, ea in assignments.items():
+            for slot, a in ea.items():
+                if a.slot_type == "WORK":
+                    seats.append((slot, a.process_id))
+                else:
+                    reserved.setdefault(emp_id, set()).add(slot)
+        if not seats:
+            return
+
+        model = cp_model.CpModel()
+        wage_unit = self.slot_hours  # hours per slot
+
+        # x[s, emp] = 1 if employee emp fills seat s
+        x: Dict = {}
+        seat_emps: Dict[int, list] = {}
+        for s_idx, (slot, process_id) in enumerate(seats):
+            emps = []
+            for emp in self.active_employees:
+                eid = emp.employee_id
+                if process_id not in self.skills.get(eid, {}):
+                    continue
+                if slot not in self.employee_available_slots.get(eid, []):
+                    continue
+                if slot in reserved.get(eid, set()):
+                    continue
+                x[(s_idx, eid)] = model.NewBoolVar(f"x_{s_idx}_{eid}")
+                emps.append(eid)
+            seat_emps[s_idx] = emps
+            if emps:
+                model.Add(sum(x[(s_idx, eid)] for eid in emps) == 1)
+            else:
+                return  # a seat is unfillable; abort and keep current solution
+
+        # One process per slot per employee
+        slots_set = set(slot for slot, _ in seats)
+        for emp in self.active_employees:
+            eid = emp.employee_id
+            for slot in slots_set:
+                vars_here = [
+                    x[(s_idx, eid)]
+                    for s_idx, (s_slot, _) in enumerate(seats)
+                    if s_slot == slot and (s_idx, eid) in x
+                ]
+                if len(vars_here) > 1:
+                    model.Add(sum(vars_here) <= 1)
+
+        # Per-employee overtime: cost = base*n + (rate-1)*base*overtime_slots
+        threshold_slots = self.overtime_threshold_minutes // self.slot_minutes
+        cost_terms = []
+        SCALE = 100  # integer scaling for wages
+        for emp in self.active_employees:
+            eid = emp.employee_id
+            my_vars = [x[(s_idx, eid)] for s_idx in range(len(seats)) if (s_idx, eid) in x]
+            if not my_vars:
+                continue
+            wage = float(emp.hourly_wage)
+            base_per_slot = int(round(wage * wage_unit * SCALE))
+            ot_extra = int(round(wage * wage_unit * (self.overtime_wage_rate - 1.0) * SCALE))
+
+            n = model.NewIntVar(0, len(my_vars), f"n_{eid}")
+            model.Add(n == sum(my_vars))
+            ot = model.NewIntVar(0, len(my_vars), f"ot_{eid}")
+            # ot >= n - threshold ; ot >= 0
+            model.Add(ot >= n - threshold_slots)
+            cost_terms.append(base_per_slot * n + ot_extra * ot)
+
+        model.Minimize(sum(cost_terms))
+
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = time_limit_sec
+        solver.parameters.num_search_workers = 8
+        status = solver.Solve(model)
+        # CP-SAT explores a huge space internally; surface that effort
+        self.patterns_evaluated += int(solver.NumBranches())
+
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return  # keep current solution
+
+        # Rebuild assignments from the solution (preserve breaks)
+        new_assignments: Dict[str, Dict[str, Assignment]] = {
+            e.employee_id: {} for e in self.active_employees
+        }
+        # Re-place reserved (break) slots
+        for emp_id, ea in assignments.items():
+            for slot, a in ea.items():
+                if a.slot_type != "WORK":
+                    new_assignments.setdefault(emp_id, {})[slot] = a
+        # Place WORK seats per solver decision
+        for s_idx, (slot, process_id) in enumerate(seats):
+            for eid in seat_emps[s_idx]:
+                if solver.Value(x[(s_idx, eid)]) == 1:
+                    emp = next(e for e in self.active_employees if e.employee_id == eid)
+                    is_ot = self._is_overtime_slot(emp, slot, new_assignments[eid])
+                    cost = self._calc_slot_cost(emp, slot, new_assignments[eid])
+                    new_assignments[eid][slot] = Assignment(
+                        employee_id=eid,
+                        process_id=process_id,
+                        time_slot_start=slot,
+                        slot_type="WORK",
+                        is_overtime=is_ot,
+                        slot_cost=cost,
+                    )
+                    break
+
+        # Commit back into the caller's dict
+        for emp_id in list(assignments.keys()):
+            assignments[emp_id] = new_assignments.get(emp_id, {})
 
     def run(self):
         raise NotImplementedError

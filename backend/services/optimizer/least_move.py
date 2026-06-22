@@ -28,6 +28,11 @@ class LeastMoveOptimizer(BaseOptimizer):
         wage = float(emp.hourly_wage)
         return (0 if same_process else 1, wage * (self.overtime_wage_rate if is_ot else 1.0))
 
+    def _objective(self, assignments):
+        # Primary: fewest process moves; tiebreak: cheaper
+        s = self.calc_score(assignments)
+        return s["total_moves"] * 1_000_000 + s["total_cost"]
+
     def run(self):
         assignments: Dict[str, Dict[str, Assignment]] = {
             emp.employee_id: {} for emp in self.active_employees
@@ -35,8 +40,11 @@ class LeastMoveOptimizer(BaseOptimizer):
         self._assign_lunch_breaks(assignments)
         self._run_flow(assignments)
 
-        # Local search: resolve isolated process assignments (飛び地解消)
-        self._resolve_isolated_slots(assignments, max_iter=200)
+        if self.method == "GREEDY":
+            # Local search: resolve isolated process assignments (飛び地解消)
+            self._resolve_isolated_slots(assignments, max_iter=200)
+        else:
+            self._refine(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)

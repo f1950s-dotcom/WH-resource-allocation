@@ -15,31 +15,32 @@ router = APIRouter()
 _running: dict = {}
 
 
-def _run_optimization(date: str, db_url: str):
+def _run_optimization(date: str, method: str):
     from database import engine
     from sqlalchemy.orm import sessionmaker
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     try:
-        fastest = FastestOptimizer(date, db)
-        fastest.run()
-        cheapest = CheapestOptimizer(date, db)
-        cheapest.run()
-        least = LeastMoveOptimizer(date, db)
-        least.run()
+        FastestOptimizer(date, db, method).run()
+        CheapestOptimizer(date, db, method).run()
+        LeastMoveOptimizer(date, db, method).run()
     finally:
         db.close()
     _running.pop(date, None)
 
 
 @router.post("/optimize/{date}")
-def run_optimization(date: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def run_optimization(date: str, background_tasks: BackgroundTasks,
+                     method: str = "GREEDY", db: Session = Depends(get_db)):
     if date in _running:
         return {"status": "already_running", "date": date}
 
+    if method not in ("GREEDY", "ANNEALING", "ORTOOLS"):
+        method = "GREEDY"
+
     _running[date] = True
-    background_tasks.add_task(_run_optimization, date, "")
-    return {"status": "started", "date": date}
+    background_tasks.add_task(_run_optimization, date, method)
+    return {"status": "started", "date": date, "method": method}
 
 
 @router.get("/optimize/{date}/results", response_model=List[OptimizationResultResponse])
