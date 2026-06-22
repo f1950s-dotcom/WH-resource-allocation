@@ -21,7 +21,7 @@ class FastestOptimizer(BaseOptimizer):
 
         # Sort employees: skill_level desc (will be per-process), wage asc
         # We'll sort per process when assigning
-        all_process_ids = list(self.required_slots.keys())
+        all_process_ids = self.process_order
 
         # Get all time slots from required_slots
         all_slots = sorted(set(
@@ -74,7 +74,7 @@ class FastestOptimizer(BaseOptimizer):
         Simple local search: try to assign unassigned required slots
         by finding any eligible employee.
         """
-        all_process_ids = list(self.required_slots.keys())
+        all_process_ids = self.process_order
         all_slots = sorted(set(
             slot
             for proc_slots in self.required_slots.values()

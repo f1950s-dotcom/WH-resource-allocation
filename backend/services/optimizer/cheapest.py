@@ -21,7 +21,7 @@ class CheapestOptimizer(BaseOptimizer):
 
         self._assign_lunch_breaks(assignments)
 
-        all_process_ids = list(self.required_slots.keys())
+        all_process_ids = self.process_order
         all_slots = sorted(set(
             slot
             for proc_slots in self.required_slots.values()

@@ -15,6 +15,7 @@ from models import (
     VolumeExpansion, ProcessDeadlineCondition,
     SystemCondition, SkillLevelProductivityRate,
     OptimizationResult, OptimizationAssignment,
+    ProcessConnection,
 )
 
 
@@ -120,6 +121,26 @@ class BaseOptimizer:
         self.required_slots: Dict[str, Dict[str, float]] = {}
         for e in expansions:
             self.required_slots.setdefault(e.process_id, {})[e.time_slot_start] = float(e.required_person_slots)
+
+        # Build topological order of processes (upstream first)
+        connections = db.query(ProcessConnection).all()
+        upstream_of: Dict[str, str] = {c.to_process_id: c.from_process_id for c in connections}
+        all_pids = list(self.required_slots.keys())
+        visited: set = set()
+        topo_order: List[str] = []
+
+        def _visit(pid: str):
+            if pid in visited:
+                return
+            visited.add(pid)
+            up = upstream_of.get(pid)
+            if up and up in self.required_slots:
+                _visit(up)
+            topo_order.append(pid)
+
+        for pid in all_pids:
+            _visit(pid)
+        self.process_order: List[str] = topo_order
 
         # Load deadlines
         self.deadlines: Dict[str, str] = {}
