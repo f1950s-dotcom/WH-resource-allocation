@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getShifts, exportShifts, getProcesses, getVolumeExpansions } from '../api/client';
+import { getShifts, exportShifts, getProcesses, getVolumeExpansions, getProcessConnections, getVolumeRules, getVolumePlans } from '../api/client';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -25,6 +25,9 @@ export default function Shift() {
   const { data: shifts } = useQuery({ queryKey: ['shifts', date], queryFn: () => getShifts(date) });
   const { data: processes = [] } = useQuery({ queryKey: ['processes'], queryFn: getProcesses });
   const { data: expansions = [] } = useQuery({ queryKey: ['expansions', date], queryFn: () => getVolumeExpansions(date) });
+  const { data: connections = [] } = useQuery({ queryKey: ['connections'], queryFn: getProcessConnections });
+  const { data: volumeRules = [] } = useQuery({ queryKey: ['volumeRules'], queryFn: getVolumeRules });
+  const { data: volumePlans = [] } = useQuery({ queryKey: ['volumePlans', date], queryFn: () => getVolumePlans(date) });
 
   const procMap = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
   const procList = processes.map((p: any) => p.process_id);
@@ -72,35 +75,115 @@ export default function Shift() {
   const empWorkMinutes = (emp: any) => emp.slots.filter((s: any) => s.slot_type === 'WORK').length * 15;
   const empCost = (emp: any) => emp.slots.reduce((s: number, sl: any) => s + (sl.slot_cost ?? 0), 0);
 
-  // Graph data per process
-  const expansionProcIds = [...new Set(expansions.map((e: any) => e.process_id as string))] as string[];
-  const selectedProc = graphProcess || expansionProcIds[0] || '';
+  // Build upstream map and topological order for flow simulation
+  const upstreamOf: Record<string, string> = Object.fromEntries(
+    (connections as any[]).map((c: any) => [c.to_process_id, c.from_process_id])
+  );
+  const ruleMap: Record<string, { source_type: string; rate: number }> = Object.fromEntries(
+    (volumeRules as any[]).map((r: any) => [r.process_id, { source_type: r.source_type, rate: Number(r.conversion_rate) }])
+  );
 
-  const graphData = (() => {
-    if (!selectedProc) return [];
-    const procExpansions = expansions.filter((e: any) => e.process_id === selectedProc);
-    const expMap: Record<string, any> = Object.fromEntries(procExpansions.map((e: any) => [e.time_slot_start, e]));
-    const assignedMap: Record<string, number> = {};
+  function topoSort(pids: string[], upOf: Record<string, string>): string[] {
+    const visited = new Set<string>();
+    const order: string[] = [];
+    function visit(pid: string) {
+      if (visited.has(pid)) return;
+      visited.add(pid);
+      const up = upOf[pid];
+      if (up && pids.includes(up)) visit(up);
+      order.push(pid);
+    }
+    pids.forEach(visit);
+    return order;
+  }
+
+  // Assignment-based flow simulation across all processes
+  const simulationData: Record<string, Array<{ slot: string; 必要人員: number; 配置人員: number; 処理量: number; 処理残量: number }>> = (() => {
+    const activePids = processes.map((p: any) => p.process_id);
+    if (!activePids.length || !volumePlans.length) return {};
+
+    const procOrder = topoSort(activePids, upstreamOf);
+
+    // plan_map: (source_type, slot) -> volume
+    const planMap: Record<string, number> = {};
+    (volumePlans as any[]).forEach((vp: any) => {
+      planMap[`${vp.volume_type}__${vp.time_slot_start}`] = Number(vp.volume);
+    });
+
+    // assigned count per process per slot
+    const assignedCount: Record<string, Record<string, number>> = {};
+    activePids.forEach((pid: string) => { assignedCount[pid] = {}; });
     employeeRows.forEach((emp: any) => {
       emp.slots.forEach((s: any) => {
-        if (s.slot_type === 'WORK' && s.process_id === selectedProc) {
-          assignedMap[s.time_slot_start] = (assignedMap[s.time_slot_start] ?? 0) + 1;
+        if (s.slot_type === 'WORK' && s.process_id) {
+          assignedCount[s.process_id][s.time_slot_start] = (assignedCount[s.process_id][s.time_slot_start] ?? 0) + 1;
         }
       });
     });
-    const slots = [...new Set([
-      ...procExpansions.map((e: any) => e.time_slot_start as string),
-      ...Object.keys(assignedMap),
-    ])].sort() as string[];
 
-    return slots.map(slot => ({
-      slot,
-      必要人員: expMap[slot]?.required_person_slots ?? 0,
-      配置人員: assignedMap[slot] ?? 0,
-      積み残し: expMap[slot] ? Math.round((expMap[slot].carry_over_volume / (expMap[slot].process_volume || 1)) * 100) / 100 : 0,
-      処理残量: expMap[slot]?.carry_over_volume ?? 0,
-    }));
+    const procMap2: Record<string, any> = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
+
+    // Collect all slots
+    const allSlotsSet = new Set<string>();
+    (volumePlans as any[]).forEach((vp: any) => allSlotsSet.add(vp.time_slot_start));
+    Object.values(assignedCount).forEach(m => Object.keys(m).forEach(s => allSlotsSet.add(s)));
+    const allSlotsSorted = [...allSlotsSet].sort();
+
+    const SLOT_H = 15.0 / 60.0;
+    const backlog: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
+    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map((pid: string) => [pid, {}]));
+    const result: Record<string, Array<{ slot: string; 必要人員: number; 配置人員: number; 処理量: number; 処理残量: number }>> = {};
+    activePids.forEach((pid: string) => { result[pid] = []; });
+
+    for (let idx = 0; idx < allSlotsSorted.length; idx++) {
+      const slot = allSlotsSorted[idx];
+      const prevSlot = idx > 0 ? allSlotsSorted[idx - 1] : null;
+
+      for (const pid of procOrder) {
+        const proc = procMap2[pid];
+        if (!proc) continue;
+        const bp = Number(proc.base_productivity);
+        const rule = ruleMap[pid];
+        const isRoot = !upstreamOf[pid] || !activePids.includes(upstreamOf[pid]);
+
+        let incoming = 0;
+        if (isRoot) {
+          const src = rule?.source_type;
+          incoming = src ? (planMap[`${src}__${slot}`] ?? 0) * (rule?.rate ?? 1) : 0;
+        } else {
+          const up = upstreamOf[pid];
+          const upPrevThroughput = prevSlot ? (throughput[up]?.[prevSlot] ?? 0) : 0;
+          incoming = upPrevThroughput * (rule?.rate ?? 1);
+        }
+
+        backlog[pid] += incoming;
+        const workPresent = backlog[pid];
+        const cnt = assignedCount[pid][slot] ?? 0;
+        const actualThroughput = Math.min(workPresent, cnt * bp * SLOT_H);
+        backlog[pid] = workPresent - actualThroughput;
+        throughput[pid][slot] = actualThroughput;
+
+        const requiredPersonSlots = bp > 0 ? workPresent / (bp * SLOT_H) : 0;
+
+        if (workPresent > 0 || cnt > 0) {
+          result[pid].push({
+            slot,
+            必要人員: Math.round(requiredPersonSlots * 10) / 10,
+            配置人員: cnt,
+            処理量: Math.round(actualThroughput * 10) / 10,
+            処理残量: Math.round(backlog[pid] * 10) / 10,
+          });
+        }
+      }
+    }
+    return result;
   })();
+
+  const simProcIds = Object.keys(simulationData).filter(pid => simulationData[pid].length > 0);
+  const expansionProcIds = simProcIds.length ? simProcIds : [...new Set(expansions.map((e: any) => e.process_id as string))] as string[];
+  const selectedProc = graphProcess || expansionProcIds[0] || '';
+
+  const graphData = simulationData[selectedProc] ?? [];
 
   return (
     <div className="p-6">
@@ -236,12 +319,12 @@ export default function Shift() {
             </div>
           </div>
 
-          {graphData.length > 0 ? (
+          {graphData.length > 0 && selectedProc ? (
             <>
-              <div className="mb-2 text-xs text-gray-500">
-                <span className="font-medium">必要人員</span>：配置が必要な人数
-                <span className="font-medium">配置人員</span>：実際に配置された人数
-                <span className="font-medium">処理残量</span>：スロット終了時点の積み残し物量
+              <div className="mb-2 text-xs text-gray-500 flex gap-4 flex-wrap">
+                <span><span className="font-medium">必要人員</span>：そのスロットの作業量を捌くのに必要な人数</span>
+                <span><span className="font-medium">配置人員</span>：実際に配置された人数</span>
+                <span><span className="font-medium">処理残量</span>：配置人員で処理後の積み残し物量（配置ベース）</span>
               </div>
               <ResponsiveContainer width="100%" height={380}>
                 <ComposedChart data={graphData} margin={{ top: 5, right: 20, left: 10, bottom: 60 }}>
@@ -250,12 +333,13 @@ export default function Shift() {
                   <YAxis yAxisId="left" label={{ value: '人員数', angle: -90, position: 'insideLeft', fontSize: 11 }} />
                   <YAxis yAxisId="right" orientation="right" label={{ value: '積み残し量', angle: 90, position: 'insideRight', fontSize: 11 }} />
                   <Tooltip formatter={(value: any, name: string) => [
-                    name === '処理残量' ? `${Number(value).toLocaleString()} 個` : `${value} 人`,
+                    (name === '処理残量' || name === '処理量') ? `${Number(value).toLocaleString()} 個` : `${value} 人`,
                     name,
                   ]} />
                   <Legend verticalAlign="top" />
                   <Bar yAxisId="left" dataKey="必要人員" fill="#bfdbfe" name="必要人員" />
                   <Bar yAxisId="left" dataKey="配置人員" fill="#3b82f6" name="配置人員" />
+                  <Line yAxisId="right" type="monotone" dataKey="処理量" stroke="#22c55e" strokeWidth={2} dot={false} name="処理量" />
                   <Line yAxisId="right" type="monotone" dataKey="処理残量" stroke="#ef4444" strokeWidth={2} dot={false} name="処理残量" />
                 </ComposedChart>
               </ResponsiveContainer>
