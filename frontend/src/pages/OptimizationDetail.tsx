@@ -16,7 +16,12 @@ export default function OptimizationDetail() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data: assignments = [] } = useQuery({ queryKey: ['assignments', resultId, date], queryFn: () => getOptimizationAssignments(resultId!, date) });
+  const { data: assignments = [], isLoading: loadingAssign, isError: assignError } = useQuery({
+    queryKey: ['assignments', resultId, date],
+    queryFn: () => getOptimizationAssignments(resultId!, date),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const { data: results = [] } = useQuery({ queryKey: ['optResults', date], queryFn: () => getOptimizationResults(date) });
   const { data: processes = [] } = useQuery({ queryKey: ['processes'], queryFn: getProcesses });
 
@@ -41,7 +46,7 @@ export default function OptimizationDetail() {
   return (
     <div className="p-6">
       <div className="flex items-center gap-3 mb-4">
-        <button onClick={() => navigate(-1)} className="text-gray-500 hover:text-gray-700 text-sm">← 戻る</button>
+        <button onClick={() => navigate(`/optimization?date=${date}`)} className="text-gray-500 hover:text-gray-700 text-sm">← 戻る</button>
         <h1 className="text-xl font-bold text-gray-800">
           配置詳細：{result ? RESULT_LABELS[result.result_type] : ''}
         </h1>
@@ -67,7 +72,15 @@ export default function OptimizationDetail() {
         <div className="flex items-center gap-1 text-xs"><div className="w-3 h-3 rounded bg-gray-300" /><span>法定休憩</span></div>
       </div>
 
-      <div className="bg-white rounded-lg border overflow-auto" style={{ maxHeight: '65vh' }}>
+      {(loadingAssign || assignError || assignments.length === 0) && (
+        <div className="bg-white rounded-lg border p-8 text-center text-sm text-gray-500 mb-4">
+          {loadingAssign ? '配置を読み込んでいます...'
+            : assignError ? '配置の取得に失敗しました。対象日を確認のうえ、最適化を再実行してください。'
+            : 'この案には配置データがありません。対象日を確認のうえ、最適化を再実行してください。'}
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border overflow-auto" style={{ maxHeight: '65vh', display: assignments.length === 0 ? 'none' : undefined }}>
         <table className="text-xs border-collapse">
           <thead className="sticky top-0 bg-white z-10">
             <tr>
@@ -113,7 +126,7 @@ export default function OptimizationDetail() {
       </div>
 
       <div className="mt-4 flex gap-3">
-        <button onClick={() => navigate(-1)} className="px-4 py-2 border rounded text-sm text-gray-600 hover:bg-gray-50">戻る</button>
+        <button onClick={() => navigate(`/optimization?date=${date}`)} className="px-4 py-2 border rounded text-sm text-gray-600 hover:bg-gray-50">戻る</button>
         <button onClick={() => selectMut.mutate()} disabled={selectMut.isPending} className="px-6 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
           {selectMut.isPending ? '処理中...' : 'この案を選択してシフト生成へ'}
         </button>

@@ -334,7 +334,18 @@ class BaseOptimizer:
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         result_id = str(uuid.uuid4())
 
-        # Delete previous results of same type for this date
+        # Delete previous results of same type for this date, and their
+        # assignments (avoid orphaned assignment rows accumulating on re-run)
+        old_ids = [
+            r.result_id for r in self.db.query(OptimizationResult).filter(
+                OptimizationResult.plan_date == self.plan_date,
+                OptimizationResult.result_type == self.RESULT_TYPE,
+            ).all()
+        ]
+        if old_ids:
+            self.db.query(OptimizationAssignment).filter(
+                OptimizationAssignment.result_id.in_(old_ids)
+            ).delete(synchronize_session=False)
         self.db.query(OptimizationResult).filter(
             OptimizationResult.plan_date == self.plan_date,
             OptimizationResult.result_type == self.RESULT_TYPE,

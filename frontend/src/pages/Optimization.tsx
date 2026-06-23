@@ -18,10 +18,11 @@ const RESULT_DESC: Record<string, string> = {
 };
 
 export default function Optimization() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const [date, setDate] = useState(params.get('date') ?? today());
+  const date = params.get('date') ?? today();
+  const setDate = (d: string) => setParams({ date: d }, { replace: true });
   const [method, setMethod] = useState<'GREEDY' | 'ANNEALING' | 'ORTOOLS'>('GREEDY');
   const [polling, setPolling] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
