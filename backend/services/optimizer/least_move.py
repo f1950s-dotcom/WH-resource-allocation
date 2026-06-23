@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 
 from .base import BaseOptimizer, Assignment, _parse_time
 from .cheapest import CheapestOptimizer
+from .mip import solve_mip
 
 
 class LeastMoveOptimizer(BaseOptimizer):
@@ -34,20 +35,18 @@ class LeastMoveOptimizer(BaseOptimizer):
         return s["total_moves"] * 1_000_000 + s["total_cost"]
 
     def run(self):
-        assignments: Dict[str, Dict[str, Assignment]] = {
-            emp.employee_id: {} for emp in self.active_employees
-        }
-        self._assign_lunch_breaks(assignments)
-        self._run_flow(assignments)
-
-        if self.method == "GREEDY":
-            # Local search: resolve isolated process assignments (飛び地解消)
-            self._resolve_isolated_slots(assignments, max_iter=200)
-        else:
-            self._refine(assignments)
-
-        # Send unneeded expensive workers home (only if moves don't worsen)
-        self._dismiss_expensive_workers(assignments)
+        # 勤務時間を決定変数にした真のMIPを優先（工程移動最小化）
+        assignments = solve_mip(self, "MOVES")
+        if assignments is None:
+            # フォールバック：従来のフローヒューリスティック＋帰宅後処理
+            assignments = {emp.employee_id: {} for emp in self.active_employees}
+            self._assign_lunch_breaks(assignments)
+            self._run_flow(assignments)
+            if self.method == "GREEDY":
+                self._resolve_isolated_slots(assignments, max_iter=200)
+            else:
+                self._refine(assignments)
+            self._dismiss_expensive_workers(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)

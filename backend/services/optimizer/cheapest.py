@@ -5,6 +5,7 @@
 from typing import Dict
 
 from .base import BaseOptimizer, Assignment
+from .mip import solve_mip
 
 
 class CheapestOptimizer(BaseOptimizer):
@@ -23,21 +24,18 @@ class CheapestOptimizer(BaseOptimizer):
         return self.calc_score(assignments)["total_cost"]
 
     def run(self):
-        assignments: Dict[str, Dict[str, Assignment]] = {
-            emp.employee_id: {} for emp in self.active_employees
-        }
-        self._assign_lunch_breaks(assignments)
-        self._run_flow(assignments)
-
-        if self.method == "GREEDY":
-            # Replace expensive assignments with cheaper alternatives
-            # (same process/slot -> headcount and flow unchanged)
-            self._local_search_cheapest(assignments, max_iter=200)
-        else:
-            self._refine(assignments)
-
-        # Send unneeded expensive workers home (cost drops, headcount unchanged)
-        self._dismiss_expensive_workers(assignments)
+        # 勤務時間を決定変数にした真のMIPを優先（総コスト最小化）
+        assignments = solve_mip(self, "COST")
+        if assignments is None:
+            # フォールバック：従来のフローヒューリスティック＋帰宅後処理
+            assignments = {emp.employee_id: {} for emp in self.active_employees}
+            self._assign_lunch_breaks(assignments)
+            self._run_flow(assignments)
+            if self.method == "GREEDY":
+                self._local_search_cheapest(assignments, max_iter=200)
+            else:
+                self._refine(assignments)
+            self._dismiss_expensive_workers(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)

@@ -5,6 +5,7 @@
 from typing import Dict
 
 from .base import BaseOptimizer, Assignment, _parse_time
+from .mip import solve_mip
 
 
 class FastestOptimizer(BaseOptimizer):
@@ -27,15 +28,15 @@ class FastestOptimizer(BaseOptimizer):
         return latest * 1_000_000 + cost
 
     def run(self):
-        assignments: Dict[str, Dict[str, Assignment]] = {
-            emp.employee_id: {} for emp in self.active_employees
-        }
-        self._assign_lunch_breaks(assignments)
-        self._run_flow(assignments)
-        self._refine(assignments)
-
-        # Send unneeded expensive workers home (completion time unchanged)
-        self._dismiss_expensive_workers(assignments)
+        # 勤務時間を決定変数にした真のMIPを優先（完了時刻最小化）
+        assignments = solve_mip(self, "MAKESPAN")
+        if assignments is None:
+            # フォールバック：従来のフローヒューリスティック＋帰宅後処理
+            assignments = {emp.employee_id: {} for emp in self.active_employees}
+            self._assign_lunch_breaks(assignments)
+            self._run_flow(assignments)
+            self._refine(assignments)
+            self._dismiss_expensive_workers(assignments)
 
         score = self.calc_score(assignments)
         self._save_result(assignments, score)
