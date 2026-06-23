@@ -712,18 +712,14 @@ class BaseOptimizer:
 
     def _dismiss_expensive_workers(self, assignments: Dict[str, Dict[str, Assignment]]):
         """
-        Send expensive workers home when they are not needed.
+        Send expensive workers home when the remaining workforce can still meet
+        all objectives without them.
 
-        Throughput depends on *headcount* per slot, not on who fills the seat.
-        So if every WORK slot of an expensive employee can be handed to a
-        currently-idle cheaper employee (same slot), the per-slot headcount —
-        and therefore the process-chain flow and deadlines — is unchanged while
-        total cost drops and the expensive employee ends up with zero work
-        (i.e. goes home).
-
-        We attempt a *full* evacuation per employee, most-expensive first, and
-        commit only if the strategy objective improves. This makes the dismissal
-        safe for every result type (cost / completion time / moves).
+        The correct approach is NOT slot-swapping (the other workers are already
+        occupied), but re-simulating the flow WITHOUT the expensive worker and
+        checking whether the strategy objective (completion time / cost / moves)
+        improves. If yes, replace the full assignment dict with the cheaper
+        solution. Repeat until no further dismissal is possible.
         """
         emps_by_wage = sorted(
             self.active_employees, key=lambda e: -float(e.hourly_wage)
@@ -732,67 +728,50 @@ class BaseOptimizer:
         improved = True
         while improved:
             improved = False
+            base_obj = self._objective(assignments)
+
             for emp in emps_by_wage:
                 eid = emp.employee_id
-                work_assigns = [
-                    a for a in assignments[eid].values() if a.slot_type == "WORK"
-                ]
-                if not work_assigns:
+                # Skip workers who are already idle (no WORK slots)
+                if not any(a.slot_type == "WORK" for a in assignments[eid].values()):
                     continue
 
-                base_obj = self._objective(assignments)
+                # Temporarily remove this worker from the active set
+                saved_active = self.active_employees
+                saved_avail = self.employee_available_slots
+                self.active_employees = [e for e in saved_active if e.employee_id != eid]
+                self.employee_available_slots = {
+                    k: v for k, v in saved_avail.items() if k != eid
+                }
+                self.patterns_evaluated += 1
 
-                # Plan a relocation of every work slot to an idle cheaper worker.
-                # Apply tentatively; revert wholesale if evacuation fails or the
-                # objective does not improve.
-                moved: List[Tuple[str, str, Assignment]] = []  # (target_id, slot, prev)
-                vacated: List[Tuple[str, Assignment]] = []      # (slot, removed)
-                success = True
+                # Re-run the full flow with the reduced workforce
+                trial: Dict[str, Dict[str, Assignment]] = {
+                    e.employee_id: {} for e in self.active_employees
+                }
+                self._assign_lunch_breaks(trial)
+                self._run_flow(trial)
 
-                for a in sorted(work_assigns, key=lambda x: x.time_slot_start):
-                    slot = a.time_slot_start
-                    pid = a.process_id
-                    # Free the expensive worker's seat first
-                    removed = assignments[eid].pop(slot)
-                    vacated.append((slot, removed))
+                trial_obj = self._objective(trial)
 
-                    target = None
-                    for other in reversed(emps_by_wage):  # cheapest first
-                        oid = other.employee_id
-                        if oid == eid:
-                            continue
-                        if float(other.hourly_wage) >= float(emp.hourly_wage):
-                            continue
-                        self.patterns_evaluated += 1
-                        if self.can_assign(other, pid, slot, assignments[oid]):
-                            target = other
-                            break
-
-                    if target is None:
-                        success = False
-                        break
-
-                    tid = target.employee_id
-                    is_ot = self._is_overtime_slot(target, slot, assignments[tid])
-                    cost = self._calc_slot_cost(target, slot, assignments[tid])
-                    assignments[tid][slot] = Assignment(
-                        employee_id=tid,
-                        process_id=pid,
-                        time_slot_start=slot,
-                        slot_type="WORK",
-                        is_overtime=is_ot,
-                        slot_cost=cost,
-                    )
-                    moved.append((tid, slot, removed))
-
-                if success and self._objective(assignments) < base_obj - 1e-9:
-                    improved = True  # expensive worker is now fully off the clock
+                if trial_obj < base_obj - 1e-9:
+                    # Better without this worker — adopt the trial solution,
+                    # leaving the dismissed worker with only their break slots
+                    for e in self.active_employees:
+                        assignments[e.employee_id] = trial[e.employee_id]
+                    # Clear all WORK slots for the dismissed employee
+                    for slot, a in list(assignments[eid].items()):
+                        if a.slot_type == "WORK":
+                            del assignments[eid][slot]
+                    improved = True
+                    # Restore state (active_employees already shrunk permanently)
+                    # Rebuild emps_by_wage without dismissed worker
+                    emps_by_wage = [e for e in emps_by_wage if e.employee_id != eid]
+                    break  # restart while loop with updated workforce
                 else:
-                    # Revert everything
-                    for tid, slot, _ in moved:
-                        del assignments[tid][slot]
-                    for slot, removed in vacated:
-                        assignments[eid][slot] = removed
+                    # Restore
+                    self.active_employees = saved_active
+                    self.employee_available_slots = saved_avail
 
     def run(self):
         raise NotImplementedError
