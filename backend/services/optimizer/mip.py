@@ -96,6 +96,30 @@ def solve_mip(opt, objective_type: str,
             if len(vs) > 1:
                 solver.Add(sum(vs) <= 1)
 
+    # ---- 連続勤務制約：各従業員の就労は1つの連続ブロックに限定 ----
+    # （遅い出勤・早い帰宅は可。途中離脱して戻る飛び地は不可。
+    #   昼休憩は就労可能枠から除外済みなので午前・午後は連続扱い）
+    for e in employees:
+        eid = e.employee_id
+        brk = emp_break_slots.get(eid, set())
+        ordered = [s for s in opt.employee_available_slots.get(eid, [])
+                   if s in slot_idx and s not in brk]
+        ordered.sort(key=lambda s: slot_idx[s])
+        # 各スロットの就労有無（0/1式）
+        worked = []
+        for s in ordered:
+            vs = [x[(eid, p, s)] for p in processes if (eid, p, s) in x]
+            worked.append(sum(vs) if vs else 0)
+        # 立ち上がり（0→1への遷移）は高々1回 ＝ 連続1ブロック
+        ups = []
+        for i in range(len(ordered)):
+            prev = worked[i - 1] if i > 0 else 0
+            u = solver.NumVar(0, 1, f"up_{eid}_{i}")
+            solver.Add(u >= worked[i] - prev)
+            ups.append(u)
+        if ups:
+            solver.Add(sum(ups) <= 1)
+
     # ---- 処理量 proc[p,t] と フロー制約 ----
     proc: Dict = {}
     INF = solver.infinity()
