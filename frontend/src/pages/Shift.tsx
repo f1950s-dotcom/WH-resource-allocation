@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getShifts, exportShifts, getProcesses, getVolumeExpansions, getProcessConnections, getVolumeRules, getVolumePlans, getAllEmployeeSkills, getSkillProductivityRates } from '../api/client';
+import { getShifts, exportShifts, getProcesses, getShiftFlow } from '../api/client';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -23,12 +23,7 @@ export default function Shift() {
 
   const { data: shifts } = useQuery({ queryKey: ['shifts', date], queryFn: () => getShifts(date) });
   const { data: processes = [] } = useQuery({ queryKey: ['processes'], queryFn: getProcesses });
-  useQuery({ queryKey: ['expansions', date], queryFn: () => getVolumeExpansions(date) });
-  const { data: connections = [] } = useQuery({ queryKey: ['connections'], queryFn: getProcessConnections });
-  const { data: volumeRules = [] } = useQuery({ queryKey: ['volumeRules'], queryFn: getVolumeRules });
-  const { data: volumePlans = [] } = useQuery({ queryKey: ['volumePlans', date], queryFn: () => getVolumePlans(date) });
-  const { data: allSkills = {} } = useQuery({ queryKey: ['allSkills'], queryFn: getAllEmployeeSkills });
-  const { data: skillRates = {} } = useQuery({ queryKey: ['skillRates'], queryFn: getSkillProductivityRates });
+  const { data: shiftFlow } = useQuery({ queryKey: ['shiftFlow', date], queryFn: () => getShiftFlow(date) });
 
   const procMap = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
   const procList = processes.map((p: any) => p.process_id);
@@ -76,114 +71,22 @@ export default function Shift() {
   const empWorkMinutes = (emp: any) => emp.slots.filter((s: any) => s.slot_type === 'WORK').length * 15;
   const empCost = (emp: any) => emp.slots.reduce((s: number, sl: any) => s + (sl.slot_cost ?? 0), 0);
 
-  // Build upstream map and topological order for flow simulation
-  const upstreamOf: Record<string, string> = Object.fromEntries(
-    (connections as any[]).map((c: any) => [c.to_process_id, c.from_process_id])
-  );
-  const ruleMap: Record<string, { source_type: string; rate: number }> = Object.fromEntries(
-    (volumeRules as any[]).map((r: any) => [r.process_id, { source_type: r.source_type, rate: Number(r.conversion_rate) }])
-  );
-
-  function topoSort(pids: string[], upOf: Record<string, string>): string[] {
-    const visited = new Set<string>();
-    const order: string[] = [];
-    function visit(pid: string) {
-      if (visited.has(pid)) return;
-      visited.add(pid);
-      const up = upOf[pid];
-      if (up && pids.includes(up)) visit(up);
-      order.push(pid);
-    }
-    pids.forEach(visit);
-    return order;
-  }
-
-  // Assignment-based flow simulation: returns per-process cumulative arrived/processed
+  // 処理フローはバックエンドが唯一の真実として計算する（フロントでの
+  // 再シミュレーションは廃止）。/api/shifts/{date}/flow の結果をそのまま表示。
   const simCumData: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = (() => {
-    const activePids = processes.map((p: any) => p.process_id);
-    if (!activePids.length || !volumePlans.length) return {};
-
-    const procOrder = topoSort(activePids, upstreamOf);
-    const planMap: Record<string, number> = {};
-    (volumePlans as any[]).forEach((vp: any) => {
-      planMap[`${vp.volume_type}__${vp.time_slot_start}`] = Number(vp.volume);
+    const procData = (shiftFlow as any)?.processes ?? {};
+    const out: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = {};
+    Object.keys(procData).forEach((pid: string) => {
+      out[pid] = (procData[pid] as any[]).map((r: any) => ({
+        slot: r.slot,
+        発生量累計: r.cum_arrived,
+        処理実績累計: r.cum_processed,
+        発生量: r.incoming,
+        処理量: r.processed,
+        処理残: r.backlog,
+      }));
     });
-
-    const procMap2: Record<string, any> = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
-
-    // 配置された各人員の熟練度補正済み処理能力を合算する
-    // （単純な「人数 × base_prod」ではなく「Σ(base_prod × skill_rate)」でバックエンドと一致させる）
-    const assignedCapacity: Record<string, Record<string, number>> = {};
-    activePids.forEach((pid: string) => { assignedCapacity[pid] = {}; });
-    employeeRows.forEach((emp: any) => {
-      emp.slots.forEach((s: any) => {
-        if (s.slot_type === 'WORK' && s.process_id) {
-          const empSkills: any[] = (allSkills as any)[emp.employee_id] ?? [];
-          const skillEntry = empSkills.find((sk: any) => sk.process_id === s.process_id);
-          const skillLevel: number = skillEntry?.skill_level ?? 2;
-          const rate: number = (skillRates as any)[skillLevel] ?? 1.0;
-          const pid2 = s.process_id;
-          const bp = Number(procMap2[pid2]?.base_productivity ?? 0);
-          assignedCapacity[pid2][s.time_slot_start] = (assignedCapacity[pid2][s.time_slot_start] ?? 0) + bp * rate;
-        }
-      });
-    });
-
-    const allSlotsSet = new Set<string>();
-    (volumePlans as any[]).forEach((vp: any) => allSlotsSet.add(vp.time_slot_start));
-    Object.values(assignedCapacity).forEach(m => Object.keys(m).forEach(s => allSlotsSet.add(s)));
-    const allSlotsSorted = [...allSlotsSet].sort();
-
-    const SLOT_H = 15.0 / 60.0;
-    const backlog: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
-    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map((pid: string) => [pid, {}]));
-    const cumArrived: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
-    const cumProcessed: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
-    const result: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = {};
-    activePids.forEach((pid: string) => { result[pid] = []; });
-
-    for (let idx = 0; idx < allSlotsSorted.length; idx++) {
-      const slot = allSlotsSorted[idx];
-      const prevSlot = idx > 0 ? allSlotsSorted[idx - 1] : null;
-
-      for (const pid of procOrder) {
-        const proc = procMap2[pid];
-        if (!proc) continue;
-        const bp = Number(proc.base_productivity);
-        const rule = ruleMap[pid];
-        const isRoot = !upstreamOf[pid] || !activePids.includes(upstreamOf[pid]);
-
-        let incoming = 0;
-        if (isRoot) {
-          const src = rule?.source_type;
-          incoming = src ? (planMap[`${src}__${slot}`] ?? 0) * (rule?.rate ?? 1) : 0;
-        } else {
-          const up = upstreamOf[pid];
-          const upPrevThroughput = prevSlot ? (throughput[up]?.[prevSlot] ?? 0) : 0;
-          incoming = upPrevThroughput * (rule?.rate ?? 1);
-        }
-
-        cumArrived[pid] += incoming;
-        backlog[pid] += incoming;
-        const slotCap = (assignedCapacity[pid][slot] ?? 0) * SLOT_H;
-        const actualThroughput = Math.min(backlog[pid], slotCap);
-        backlog[pid] -= actualThroughput;
-        cumProcessed[pid] += actualThroughput;
-        throughput[pid][slot] = actualThroughput;
-
-        if (cumArrived[pid] > 0 || cumProcessed[pid] > 0) {
-          result[pid].push({
-            slot,
-            発生量累計: Math.round(cumArrived[pid] * 10) / 10,
-            処理実績累計: Math.round(cumProcessed[pid] * 10) / 10,
-            発生量: Math.round(incoming * 10) / 10,
-            処理量: Math.round(actualThroughput * 10) / 10,
-            処理残: Math.round(backlog[pid] * 10) / 10,
-          });
-        }
-      }
-    }
-    return result;
+    return out;
   })();
 
   // Group processes by line_type for two separate graphs

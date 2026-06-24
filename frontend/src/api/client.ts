@@ -23,6 +23,7 @@ export const updateWorkConditions = (employeeId: string, conditions: object[]) =
 // Processes  →  /api/processes
 export const getProcesses = () => api.get('/api/processes').then(r => r.data);
 export const getSkillProductivityRates = () => api.get('/api/skill-productivity-rates').then(r => r.data);
+export const getShiftFlow = (date: string) => api.get(`/api/shifts/${date}/flow`).then(r => r.data);
 export const createProcess = (data: object) => api.post('/api/processes', data).then(r => r.data);
 export const updateProcess = (id: string, data: object) => api.put(`/api/processes/${id}`, data).then(r => r.data);
 export const deleteProcess = (id: string) => api.delete(`/api/processes/${id}`).then(r => r.data);

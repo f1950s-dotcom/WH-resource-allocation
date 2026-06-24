@@ -6,8 +6,16 @@ import io
 from database import get_db
 from models import OptimizationResult, OptimizationAssignment, Employee, Process
 from services.excel_exporter import generate_excel
+from services.flow_report import get_flow_report_for_date
 
 router = APIRouter()
+
+
+@router.get("/shifts/{date}/flow")
+def get_shift_flow(date: str, db: Session = Depends(get_db)):
+    """工程ごと・スロットごとの 処理発生/処理量/処理残（唯一の真実）。
+    フロントの再シミュレーションを廃し、この結果を表示するだけにする。"""
+    return get_flow_report_for_date(date, db)
 
 
 @router.get("/shifts/{date}")
