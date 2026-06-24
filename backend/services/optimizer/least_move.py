@@ -35,8 +35,10 @@ class LeastMoveOptimizer(BaseOptimizer):
         return s["total_moves"] * 1_000_000 + s["total_cost"]
 
     def run(self):
-        # 勤務時間を決定変数にした真のMIPを優先（工程移動最小化）
-        assignments = solve_mip(self, "MOVES")
+        # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
+        assignments = None
+        if self.method != "GREEDY":
+            assignments = solve_mip(self, "MOVES", time_limit_sec=15.0)
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}

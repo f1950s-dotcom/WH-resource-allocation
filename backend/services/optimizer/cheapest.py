@@ -24,8 +24,10 @@ class CheapestOptimizer(BaseOptimizer):
         return self.calc_score(assignments)["total_cost"]
 
     def run(self):
-        # 勤務時間を決定変数にした真のMIPを優先（総コスト最小化）
-        assignments = solve_mip(self, "COST")
+        # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
+        assignments = None
+        if self.method != "GREEDY":
+            assignments = solve_mip(self, "COST", time_limit_sec=15.0)
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}

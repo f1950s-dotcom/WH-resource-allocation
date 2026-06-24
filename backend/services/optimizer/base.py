@@ -725,68 +725,57 @@ class BaseOptimizer:
         for emp_id in list(assignments.keys()):
             assignments[emp_id] = new_assignments.get(emp_id, {})
 
-    def _dismiss_expensive_workers(self, assignments: Dict[str, Dict[str, Assignment]]):
+    def _dismiss_expensive_workers(self, assignments: Dict[str, Dict[str, Assignment]],
+                                    max_candidates: int = 8):
         """
         Send expensive workers home when the remaining workforce can still meet
         all objectives without them.
 
-        The correct approach is NOT slot-swapping (the other workers are already
-        occupied), but re-simulating the flow WITHOUT the expensive worker and
-        checking whether the strategy objective (completion time / cost / moves)
-        improves. If yes, replace the full assignment dict with the cheaper
-        solution. Repeat until no further dismissal is possible.
+        max_candidates: 試みる上位高コスト従業員の最大数（計算時間上限のため）。
+        改善が見つかった場合のみ次の候補へ進む（1パス）。
         """
         emps_by_wage = sorted(
             self.active_employees, key=lambda e: -float(e.hourly_wage)
         )
+        # 既に稼働中の従業員のみ候補にする（上位max_candidates人まで）
+        candidates = [
+            e for e in emps_by_wage
+            if any(a.slot_type == "WORK" for a in assignments.get(e.employee_id, {}).values())
+        ][:max_candidates]
 
-        improved = True
-        while improved:
-            improved = False
-            base_obj = self._objective(assignments)
+        base_obj = self._objective(assignments)
 
-            for emp in emps_by_wage:
-                eid = emp.employee_id
-                # Skip workers who are already idle (no WORK slots)
-                if not any(a.slot_type == "WORK" for a in assignments[eid].values()):
-                    continue
+        for emp in candidates:
+            eid = emp.employee_id
 
-                # Temporarily remove this worker from the active set
-                saved_active = self.active_employees
-                saved_avail = self.employee_available_slots
-                self.active_employees = [e for e in saved_active if e.employee_id != eid]
-                self.employee_available_slots = {
-                    k: v for k, v in saved_avail.items() if k != eid
-                }
-                self.patterns_evaluated += 1
+            saved_active = self.active_employees
+            saved_avail = self.employee_available_slots
+            self.active_employees = [e for e in saved_active if e.employee_id != eid]
+            self.employee_available_slots = {
+                k: v for k, v in saved_avail.items() if k != eid
+            }
+            self.patterns_evaluated += 1
 
-                # Re-run the full flow with the reduced workforce
-                trial: Dict[str, Dict[str, Assignment]] = {
-                    e.employee_id: {} for e in self.active_employees
-                }
-                self._assign_lunch_breaks(trial)
-                self._run_flow(trial)
+            trial: Dict[str, Dict[str, Assignment]] = {
+                e.employee_id: {} for e in self.active_employees
+            }
+            self._assign_lunch_breaks(trial)
+            self._run_flow(trial)
 
-                trial_obj = self._objective(trial)
+            trial_obj = self._objective(trial)
 
-                if trial_obj < base_obj - 1e-9:
-                    # Better without this worker — adopt the trial solution,
-                    # leaving the dismissed worker with only their break slots
-                    for e in self.active_employees:
-                        assignments[e.employee_id] = trial[e.employee_id]
-                    # Clear all WORK slots for the dismissed employee
-                    for slot, a in list(assignments[eid].items()):
-                        if a.slot_type == "WORK":
-                            del assignments[eid][slot]
-                    improved = True
-                    # Restore state (active_employees already shrunk permanently)
-                    # Rebuild emps_by_wage without dismissed worker
-                    emps_by_wage = [e for e in emps_by_wage if e.employee_id != eid]
-                    break  # restart while loop with updated workforce
-                else:
-                    # Restore
-                    self.active_employees = saved_active
-                    self.employee_available_slots = saved_avail
+            if trial_obj < base_obj - 1e-9:
+                # Better without this worker — adopt the trial solution
+                for e in self.active_employees:
+                    assignments[e.employee_id] = trial[e.employee_id]
+                for slot, a in list(assignments[eid].items()):
+                    if a.slot_type == "WORK":
+                        del assignments[eid][slot]
+                base_obj = trial_obj
+                # 次の候補も時給降順で継続（while不要、forで十分）
+            else:
+                self.active_employees = saved_active
+                self.employee_available_slots = saved_avail
 
     def run(self):
         raise NotImplementedError
