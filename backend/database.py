@@ -37,9 +37,15 @@ def init_db():
             conn.execute(text(stmt))
         conn.commit()
 
-        # シードデータ（工程構成・従業員）: INSERT OR IGNORE なので既存行は保持
+        # シードデータ（工程構成・従業員）は「初回のみ」投入する。
+        # 一度投入したら system_conditions の seed_data_loaded フラグを立て、
+        # 以降は完全にスキップ。これにより利用者による変更・削除がすべて維持される
+        # （初期値として一度だけ植え、その後は変更後のデータを使い続けられる）。
+        already = conn.execute(text(
+            "SELECT condition_value FROM system_conditions WHERE condition_key='seed_data_loaded'"
+        )).fetchone()
         seed_path = os.path.join(os.path.dirname(__file__), "migrations", "seed_data.sql")
-        if os.path.exists(seed_path):
+        if not already and os.path.exists(seed_path):
             with open(seed_path, "r", encoding="utf-8") as f:
                 seed_content = f.read()
             for raw in seed_content.split(";"):
@@ -49,6 +55,10 @@ def init_db():
                 ).strip()
                 if stmt:
                     conn.execute(text(stmt))
+            conn.execute(text(
+                "INSERT OR REPLACE INTO system_conditions (condition_key, condition_value, description) "
+                "VALUES ('seed_data_loaded', '1', 'シードデータ投入済みフラグ（再投入防止）')"
+            ))
             conn.commit()
 
         # Lightweight migrations for existing databases
