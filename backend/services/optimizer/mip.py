@@ -225,30 +225,38 @@ def solve_mip(opt, objective_type: str,
             expr = expr + opt.conv_rate.get(p, 1.0) * proc[(up, t - 1)]
         return expr
 
+    # 全量処理は「ソフト制約」にする。
+    #   旧実装は cum_proc >= cum_arr（全量処理）をハード制約にしていたため、
+    #   容量・締切が厳しい日（特に工程移動ペナルティで実効容量が下がる日）に
+    #   MIPがINFEASIBLEになり「MIP解なし」へ転落していた。一方ヒューリスティックは
+    #   処理しきれない分を残務として報告するだけで必ず解を返す。両者の前提を
+    #   揃えるため、未処理量 short_p を許容し、目的関数で非常に重く罰する。
+    #   これで MIP は常に実行可能解を持ち（最悪でも全スロット非稼働＝空解が成立）、
+    #   かつヒューリスティックの選択肢を包含するため解の質は決して下回らない。
+    short_terms = []
     for p in processes:
         cum_proc = 0
         cum_arr = 0
         for t in range(T):
             cum_proc = cum_proc + proc[(p, t)]
             cum_arr = cum_arr + arrived_expr(p, t)
+            # 届いた分しか処理できない（物理制約・ハードのまま）
             solver.Add(cum_proc <= cum_arr)
-        # 全量処理（最終スロットで在庫ゼロ）
-        solver.Add(cum_proc >= cum_arr)
+        short_p = solver.NumVar(0.0, INF, f"short_{p}")
+        solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
+        short_terms.append(short_p)
 
-    # ---- 締切：期限スロット以降は処理不可、かつ期限までに到着分を処理 ----
+    # ---- 締切：期限スロット以降は処理不可（締切を過ぎた処理は認めない） ----
+    #   期限後に処理できない分は上の short_p（未処理量）に吸収され、目的関数で
+    #   罰せられる。これにより「締切を厳守できる範囲で最大限処理する」最良解を返す。
+    #   ハードな「期限までに全量処理」を課さないことで INFEASIBLE を回避する。
     for p, dl in opt.deadlines.items():
         if cap_base.get(p, 0.0) <= 0:
             continue
         dmin = _parse_time(dl)
-        cum_proc = 0
-        cum_arr = 0
         for t in range(T):
             if end_min[t] > dmin:
                 solver.Add(proc[(p, t)] == 0)
-            cum_proc = cum_proc + proc[(p, t)]
-            cum_arr = cum_arr + arrived_expr(p, t)
-            if end_min[t] == dmin or (t + 1 < T and end_min[t] <= dmin < end_min[t + 1]):
-                solver.Add(cum_proc >= cum_arr)
 
     # ---- 残業：n_e, ot_e ----
     n_var, ot_var = {}, {}
@@ -268,15 +276,20 @@ def solve_mip(opt, objective_type: str,
         w = float(e.hourly_wage) * slot_hours
         cost_expr = cost_expr + w * n_var[eid] + w * (rate_ot - 1.0) * ot_var[eid]
 
+    # 未処理量ペナルティ：コスト(~1e6)・makespan項(~1e7)を確実に上回る重みにし、
+    # 「まず処理しきる、その上で各目的を最適化する」という優先順位を保証する。
+    BIG_SHORT = 1.0e9
+    short_penalty = BIG_SHORT * sum(short_terms) if short_terms else 0
+
     # ---- 目的関数 ----
     if objective_type == "COST":
-        solver.Minimize(cost_expr)
+        solver.Minimize(cost_expr + short_penalty)
     elif objective_type == "MAKESPAN":
         M = solver.NumVar(0, max(end_min), "M")
         for (eid, p, s), var in x.items():
             solver.Add(M >= end_min[slot_idx[s]] * var)
         # 完了時刻最小化、コストは微小重みで二次目的
-        solver.Minimize(M * 10000.0 + cost_expr)
+        solver.Minimize(M * 10000.0 + cost_expr + short_penalty)
     elif objective_type == "MOVES":
         # 工程分散の代理指標：従業員が触れる工程数 - 就労有無
         y, w_emp = {}, {}
@@ -294,9 +307,9 @@ def solve_mip(opt, objective_type: str,
                 solver.Add(worked >= yp - 0)  # worked is 1 if any process used
                 y[(eid, p)] = yp
         moves_expr = sum(y.values()) - sum(w_emp.values())
-        solver.Minimize(moves_expr * 10000.0 + cost_expr)
+        solver.Minimize(moves_expr * 10000.0 + cost_expr + short_penalty)
     else:
-        solver.Minimize(cost_expr)
+        solver.Minimize(cost_expr + short_penalty)
 
     status = solver.Solve(solver_params)
 
