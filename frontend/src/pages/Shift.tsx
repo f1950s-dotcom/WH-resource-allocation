@@ -97,7 +97,7 @@ export default function Shift() {
   }
 
   // Assignment-based flow simulation: returns per-process cumulative arrived/processed
-  const simCumData: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number }>> = (() => {
+  const simCumData: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = (() => {
     const activePids = processes.map((p: any) => p.process_id);
     if (!activePids.length || !volumePlans.length) return {};
 
@@ -128,7 +128,7 @@ export default function Shift() {
     const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map((pid: string) => [pid, {}]));
     const cumArrived: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
     const cumProcessed: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
-    const result: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number }>> = {};
+    const result: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = {};
     activePids.forEach((pid: string) => { result[pid] = []; });
 
     for (let idx = 0; idx < allSlotsSorted.length; idx++) {
@@ -165,6 +165,9 @@ export default function Shift() {
             slot,
             発生量累計: Math.round(cumArrived[pid] * 10) / 10,
             処理実績累計: Math.round(cumProcessed[pid] * 10) / 10,
+            発生量: Math.round(incoming * 10) / 10,
+            処理量: Math.round(actualThroughput * 10) / 10,
+            処理残: Math.round(backlog[pid] * 10) / 10,
           });
         }
       }
@@ -355,6 +358,62 @@ export default function Shift() {
                 ) : (
                   <div className="text-center text-gray-400 py-8 text-sm">
                     {!shifts ? 'シフトを選択すると処理実績累計が表示されます' : '物量展開を実行してください'}
+                  </div>
+                )}
+
+                {/* 表形式：工程ごとの 発生・処理・残 をスロット単位で表示 */}
+                {pids.length > 0 && (
+                  <div className="mt-5 space-y-5">
+                    {pids.map(pid => {
+                      const name = procMap[pid]?.process_name ?? pid;
+                      const rows = simCumData[pid] ?? [];
+                      if (!rows.length) return null;
+                      const last = rows[rows.length - 1];
+                      const totalIn = Math.round(last.発生量累計 * 10) / 10;
+                      const totalDone = Math.round(last.処理実績累計 * 10) / 10;
+                      const remain = Math.round((last.処理残) * 10) / 10;
+                      return (
+                        <div key={pid} className="border rounded-lg overflow-hidden">
+                          <div className="flex items-center justify-between bg-gray-50 px-3 py-2 border-b">
+                            <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                              <span className={`w-2 h-2 rounded-full ${procColorMap[pid]}`} />
+                              {name}
+                            </div>
+                            <div className="text-xs text-gray-500 flex gap-3">
+                              <span>発生計：<strong>{totalIn.toLocaleString()}</strong></span>
+                              <span>処理計：<strong>{totalDone.toLocaleString()}</strong></span>
+                              <span className={remain > 0.5 ? 'text-red-600' : ''}>未処理残：<strong>{remain.toLocaleString()}</strong></span>
+                            </div>
+                          </div>
+                          <div className="overflow-auto" style={{ maxHeight: '300px' }}>
+                            <table className="text-xs border-collapse w-full">
+                              <thead className="sticky top-0 bg-white z-10">
+                                <tr>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-left">時刻</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right">処理発生</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right">処理量</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right">処理残</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right">発生累計</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right">処理累計</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.map(r => (
+                                  <tr key={r.slot} className="hover:bg-gray-50">
+                                    <td className="border px-2 py-1 font-medium">{r.slot}</td>
+                                    <td className="border px-2 py-1 text-right">{r.発生量 > 0 ? r.発生量.toLocaleString() : ''}</td>
+                                    <td className="border px-2 py-1 text-right">{r.処理量 > 0 ? r.処理量.toLocaleString() : ''}</td>
+                                    <td className={`border px-2 py-1 text-right ${r.処理残 > 0.5 ? 'text-red-600 font-medium' : 'text-gray-400'}`}>{r.処理残 > 0.05 ? r.処理残.toLocaleString() : ''}</td>
+                                    <td className="border px-2 py-1 text-right text-gray-500">{r.発生量累計.toLocaleString()}</td>
+                                    <td className="border px-2 py-1 text-right text-gray-500">{r.処理実績累計.toLocaleString()}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

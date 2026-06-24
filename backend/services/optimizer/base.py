@@ -125,6 +125,20 @@ class BaseOptimizer:
         }
         self.slot_hours = self.slot_minutes / 60.0
 
+        # 工程ごとの平均熟練度係数（その工程を担当可能な稼働従業員の平均）。
+        # 必要人数の見積り（demand）に使うことで、低スキル人員が多い工程では
+        # より多くの人員を割り当て、処理残が発生しにくくする。
+        self.avg_skill_rate: Dict[str, float] = {}
+        for pid in self.process_map:
+            rates = [
+                self.skill_rates.get(
+                    self.skills[e.employee_id][pid], 1.0
+                )
+                for e in self.active_employees
+                if pid in self.skills.get(e.employee_id, {})
+            ]
+            self.avg_skill_rate[pid] = (sum(rates) / len(rates)) if rates else 1.0
+
         # Load conversion rates: process_id -> rate (used to convert upstream
         # throughput into this process's work volume)
         self.conv_rate: Dict[str, float] = {
@@ -448,11 +462,13 @@ class BaseOptimizer:
             for pid in self.process_order:
                 backlog[pid] += incoming[pid].get(slot, 0.0)
 
-            # 2. Demand (person-slots) to clear each backlog this slot
+            # 2. Demand (person-slots) to clear each backlog this slot.
+            #    1人あたり処理能力を平均熟練度で補正し、低スキル人員が多い工程では
+            #    必要人数を多めに見積もる（処理残の発生を防ぐ）。
             demand: Dict[str, float] = {}
             for pid in self.process_order:
                 bp = self.base_prod.get(pid, 0.0)
-                cap_per_person = bp * self.slot_hours
+                cap_per_person = bp * self.slot_hours * self.avg_skill_rate.get(pid, 1.0)
                 if backlog[pid] > 1e-9 and cap_per_person > 0:
                     demand[pid] = backlog[pid] / cap_per_person
             quotas = self._demand_to_quotas(demand)
