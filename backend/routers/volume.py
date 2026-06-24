@@ -24,8 +24,13 @@ def get_volume_plans(date: str, db: Session = Depends(get_db)):
 @router.put("/volume-plans/{date}", response_model=List[VolumePlanResponse])
 def update_volume_plans(date: str, body: VolumePlansUpdate, db: Session = Depends(get_db)):
     now = now_str()
-    # Delete existing
-    db.query(VolumePlan).filter(VolumePlan.plan_date == date).delete()
+    # Determine which volume_types are present in the submitted entries
+    submitted_types = {entry.volume_type for entry in body.entries}
+    # Delete only the rows for the submitted type(s), leaving other types intact
+    db.query(VolumePlan).filter(
+        VolumePlan.plan_date == date,
+        VolumePlan.volume_type.in_(submitted_types),
+    ).delete(synchronize_session=False)
     plans = []
     for entry in body.entries:
         plan = VolumePlan(
