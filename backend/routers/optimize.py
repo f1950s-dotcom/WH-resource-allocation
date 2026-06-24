@@ -18,9 +18,16 @@ _running: dict = {}
 def _run_optimization(date: str, method: str):
     from database import engine
     from sqlalchemy.orm import sessionmaker
+    from services.volume_expansion import expand_volume
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     try:
+        # 最適化の前に必ず物量展開を再生成する。
+        # これをしないと、物量登録（volume_plans）を変更しても展開
+        # （volume_expansions）が古いままとなり、最適化は旧物量で人員を
+        # 組む一方、シフト画面は最新物量で再シミュレーションするため、
+        # 「各工程で残が出る」不整合が発生する。
+        expand_volume(date, db)
         FastestOptimizer(date, db, method).run()
         CheapestOptimizer(date, db, method).run()
         LeastMoveOptimizer(date, db, method).run()
