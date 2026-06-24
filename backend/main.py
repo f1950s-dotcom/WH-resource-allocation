@@ -1,8 +1,16 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from routers import master, volume, optimize, shift
+
+# MIPソルバーのステータス・ギャップ等、最適化のログ(INFO)を確実に出力する
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 app = FastAPI(
     title="倉庫人員配置最適化システム API",

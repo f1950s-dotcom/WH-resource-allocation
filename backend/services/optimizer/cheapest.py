@@ -27,7 +27,7 @@ class CheapestOptimizer(BaseOptimizer):
         # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
         assignments = None
         if self.method != "GREEDY":
-            assignments = solve_mip(self, "COST", time_limit_sec=15.0)
+            assignments = solve_mip(self, "COST")
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}

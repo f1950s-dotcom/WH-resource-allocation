@@ -9,16 +9,35 @@
 締切・スキル制約込みで直接決定する。連続変数（処理量）と分数の変換係数を
 扱うため CP-SAT ではなく pywraplp(CBC) を用いる。
 """
+import logging
 from typing import Dict, List, Optional
 
 from .base import Assignment, _parse_time, _format_time
 
+logger = logging.getLogger(__name__)
+
+
+def _adaptive_time_limit(num_int_vars: int) -> float:
+    """規模適応の時間上限（秒）。
+
+    MIPの解時間は整数変数数に線形ではない（最悪は指数的）が、上限の
+    「目安」としては変数規模に応じて伸ばすのが妥当。実際の早期終了は
+    ギャップ基準（ratioGap）が担うので、これはあくまで安全弁（最悪上限）。
+    5秒（小規模）〜60秒（大規模）の範囲にクランプする。
+    """
+    secs = 5.0 + num_int_vars / 400.0
+    return max(5.0, min(60.0, secs))
+
 
 def solve_mip(opt, objective_type: str,
-              time_limit_sec: float = 25.0) -> Optional[Dict[str, Dict[str, Assignment]]]:
+              time_limit_sec: Optional[float] = None,
+              gap_rel: float = 0.01) -> Optional[Dict[str, Dict[str, Assignment]]]:
     """
     opt: BaseOptimizer インスタンス（読み込み済みデータを利用）
     objective_type: "COST" | "MAKESPAN" | "MOVES"
+    time_limit_sec: 時間上限（秒）。None なら整数変数数から規模適応で自動決定。
+    gap_rel: 相対最適性ギャップの目標。最良解と下界の差がこの割合以内に
+             なった時点で「実用上最適」とみなして打ち切る（既定1%）。
     戻り値: assignments、または解けない/未導入の場合 None（呼び出し側でフォールバック）
     """
     try:
@@ -29,7 +48,14 @@ def solve_mip(opt, objective_type: str,
     solver = pywraplp.Solver.CreateSolver("CBC")
     if solver is None:
         return None
-    solver.SetTimeLimit(int(time_limit_sec * 1000))
+    # ギャップ基準の早期終了：最適の厳密証明にこだわらず、最適から
+    # gap_rel 以内と保証できた時点で止める（簡単な日は即終了、難しい日だけ粘る）。
+    # CBCは SetSolverSpecificParametersAsString 非対応なので、移植性のある
+    # MPSolverParameters.RELATIVE_MIP_GAP を Solve() 時に渡す。
+    solver_params = pywraplp.MPSolverParameters()
+    solver_params.SetDoubleParam(
+        pywraplp.MPSolverParameters.RELATIVE_MIP_GAP, gap_rel
+    )
 
     employees = opt.active_employees
     if not employees:
@@ -96,6 +122,10 @@ def solve_mip(opt, objective_type: str,
 
     if not x:
         return None
+
+    # 規模（整数変数数）に応じた時間上限を設定（明示指定があれば優先）。
+    limit_sec = time_limit_sec if time_limit_sec is not None else _adaptive_time_limit(len(x))
+    solver.SetTimeLimit(int(limit_sec * 1000))
 
     # 1スロット1作業
     for e in employees:
@@ -172,7 +202,7 @@ def solve_mip(opt, objective_type: str,
 
     # ---- 締切：期限スロット以降は処理不可、かつ期限までに到着分を処理 ----
     for p, dl in opt.deadlines.items():
-        if p not in cap_per_person:
+        if cap_base.get(p, 0.0) <= 0:
             continue
         dmin = _parse_time(dl)
         cum_proc = 0
@@ -233,8 +263,39 @@ def solve_mip(opt, objective_type: str,
     else:
         solver.Minimize(cost_expr)
 
-    status = solver.Solve()
-    if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+    status = solver.Solve(solver_params)
+
+    # ---- ステータス・ギャップのログ出力 ----
+    # OPTIMAL: 時間内に厳密最適を証明 → 時間は余っている（上限を下げてよい）
+    # FEASIBLE: 時間切れで打ち切り。実用解はあるが最適の証明はできていない
+    #           → 残ギャップ(%)が「どれだけ最適から妥協したか」を表す
+    status_name = {
+        pywraplp.Solver.OPTIMAL: "OPTIMAL",
+        pywraplp.Solver.FEASIBLE: "FEASIBLE",
+        pywraplp.Solver.INFEASIBLE: "INFEASIBLE",
+        pywraplp.Solver.UNBOUNDED: "UNBOUNDED",
+        pywraplp.Solver.ABNORMAL: "ABNORMAL",
+        pywraplp.Solver.NOT_SOLVED: "NOT_SOLVED",
+    }.get(status, str(status))
+
+    if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+        try:
+            obj_val = solver.Objective().Value()
+            best_bound = solver.Objective().BestBound()
+            gap = abs(obj_val - best_bound) / (abs(obj_val) + 1e-10)
+            logger.info(
+                "MIP[%s] status=%s gap=%.2f%% obj=%.1f bound=%.1f "
+                "int_vars=%d time_limit=%.1fs wall=%.2fs",
+                objective_type, status_name, gap * 100.0, obj_val, best_bound,
+                len(x), limit_sec, solver.wall_time() / 1000.0,
+            )
+        except Exception:
+            logger.info("MIP[%s] status=%s (gap計算不可)", objective_type, status_name)
+    else:
+        logger.warning(
+            "MIP[%s] status=%s 解なし→ヒューリスティックへフォールバック",
+            objective_type, status_name,
+        )
         return None
 
     # 探索ノード数を検証パターン数として加算
