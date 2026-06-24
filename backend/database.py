@@ -83,6 +83,17 @@ def init_db():
             "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
             "VALUES ('overtime_max_end_time', '20:00', '残業可能な場合の最大勤務終了時刻')"
         ))
+        # 工程移動時の習熟ペナルティ設定（既存DBへ追加）
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('process_transition_penalty_enabled', '1', "
+            "'工程移動直後スロットの生産性ペナルティ有効フラグ（1=有効, 0=無効）')"
+        ))
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('process_transition_penalty_rate', '0.30', "
+            "'工程移動直後スロットの生産性低下率（0.30=30%低下）')"
+        ))
         conn.commit()
 
         # Lightweight migrations for existing databases

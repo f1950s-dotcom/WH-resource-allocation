@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from models import (
     Process, ProcessConnection, VolumeConversionRule, VolumeExpansion,
     EmployeeProcessSkill, SkillLevelProductivityRate,
-    OptimizationResult, OptimizationAssignment,
+    OptimizationResult, OptimizationAssignment, SystemCondition,
 )
 
 SLOT_HOURS = 15.0 / 60.0
@@ -94,20 +94,44 @@ def compute_flow_report(date: str, result_id: str, db: Session) -> Dict[str, Lis
 
     base_prod = {pid: float(p.base_productivity) for pid, p in processes.items()}
 
-    # 保存済み割当から、工程×スロットの熟練度補正済み処理能力を合算
-    # capacity[pid][slot] = Σ base_prod * skill_rate * SLOT_HOURS
-    capacity: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    assigns = db.query(OptimizationAssignment).filter(
+    # 工程移動ペナルティ設定（optimizer/base.py と同じ条件を参照）
+    conds = {c.condition_key: c.condition_value for c in db.query(SystemCondition).all()}
+    penalty_enabled = conds.get("process_transition_penalty_enabled", "1") == "1"
+    penalty_rate = float(conds.get("process_transition_penalty_rate", "0.30"))
+
+    # 保存済み割当を「従業員 → 時刻順リスト」に整理し、工程移動直後スロットを検出
+    # capacity[pid][slot] = Σ base_prod * skill_rate * transition_factor * SLOT_HOURS
+    assigns_all = db.query(OptimizationAssignment).filter(
         OptimizationAssignment.result_id == result_id,
-        OptimizationAssignment.slot_type == "WORK",
-    ).all()
-    for a in assigns:
-        if not a.process_id:
+    ).order_by(OptimizationAssignment.employee_id, OptimizationAssignment.time_slot_start).all()
+
+    # 従業員ごとの時系列割当 {emp_id: [(slot, process_id or None), ...]}
+    emp_timeline: Dict[str, list] = defaultdict(list)
+    for a in assigns_all:
+        emp_timeline[a.employee_id].append((a.time_slot_start, a.process_id if a.slot_type == "WORK" else None))
+
+    # 工程移動直後スロットを集合で保持 {(emp_id, slot): True}
+    transition_slots: set = set()
+    if penalty_enabled:
+        for eid, tl in emp_timeline.items():
+            tl.sort(key=lambda x: _parse_time(x[0]))
+            for i in range(1, len(tl)):
+                prev_pid = tl[i - 1][1]
+                cur_pid = tl[i][1]
+                cur_slot = tl[i][0]
+                # 前スロットがWORK（prev_pid!=None）かつ別工程への移動
+                if prev_pid is not None and cur_pid is not None and prev_pid != cur_pid:
+                    transition_slots.add((eid, cur_slot))
+
+    capacity: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for a in assigns_all:
+        if not a.process_id or a.slot_type != "WORK":
             continue
         level = skills.get(a.employee_id, {}).get(a.process_id, 2)
         rate = skill_rates.get(level, 1.0)
+        tf = (1.0 - penalty_rate) if (a.employee_id, a.time_slot_start) in transition_slots else 1.0
         capacity[a.process_id][a.time_slot_start] += (
-            base_prod.get(a.process_id, 0.0) * rate * SLOT_HOURS
+            base_prod.get(a.process_id, 0.0) * rate * tf * SLOT_HOURS
         )
 
     # 全スロット = 物量到着スロット ∪ 割当スロット

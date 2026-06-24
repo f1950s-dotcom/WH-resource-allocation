@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getDeadlineConditions, updateDeadlineCondition, createDeadlineCondition, getSystemConditions, updateSystemCondition, getProcesses } from '../../api/client';
+import {
+  getDeadlineConditions, updateDeadlineCondition, createDeadlineCondition,
+  getSystemConditions, updateSystemCondition, getProcesses,
+} from '../../api/client';
 
 export default function Conditions() {
   const qc = useQueryClient();
@@ -44,7 +47,8 @@ export default function Conditions() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sysConditions'] }),
   });
 
-  const SYS_LABELS: Record<string, string> = {
+  // システム条件のうち、汎用テキスト行で編集する項目（表示名マップ）
+  const GENERIC_SYS_KEYS: Record<string, string> = {
     overtime_wage_rate: '残業時給倍率',
     overtime_threshold_minutes: '残業開始閾値（分）',
     lunch_break_start: '昼休憩開始時刻',
@@ -53,7 +57,16 @@ export default function Conditions() {
     legal_break_threshold_minutes: '法定休憩必要閾値（分）',
     legal_break_minutes: '法定休憩時間（分）',
     time_slot_minutes: '時間粒度（分）',
+    overtime_max_end_time: '残業最大終了時刻',
   };
+  // 工程移動ペナルティ専用UIで扱うキー（汎用行からは除外）
+  const PENALTY_KEYS = new Set([
+    'process_transition_penalty_enabled',
+    'process_transition_penalty_rate',
+  ]);
+
+  const penaltyEnabled = (sysMap['process_transition_penalty_enabled'] ?? '1') === '1';
+  const penaltyRate = parseFloat(sysMap['process_transition_penalty_rate'] ?? '0.30');
 
   return (
     <div className="p-6 max-w-2xl">
@@ -95,6 +108,69 @@ export default function Conditions() {
 
       {tab === 'system' && (
         <>
+          {/* ── 工程移動ペナルティ専用設定 ── */}
+          <div className="bg-white rounded-lg border p-5 mb-5">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <h2 className="font-semibold text-gray-800 text-sm">工程移動時の習熟ペナルティ</h2>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  休憩なしで別工程へ移動した直後のスロットは、切り替えコストにより生産性が低下します。
+                  このオプションでその影響を最適化に反映させます。
+                </p>
+              </div>
+              {/* オン・オフトグル */}
+              <button
+                type="button"
+                onClick={() => setSysMap(m => ({
+                  ...m,
+                  process_transition_penalty_enabled: penaltyEnabled ? '0' : '1',
+                }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ml-4 ${
+                  penaltyEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  penaltyEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+
+            {penaltyEnabled && (
+              <div className="border-t pt-4">
+                <label className="block text-sm text-gray-600 mb-2">
+                  生産性低下率
+                  <span className="text-xs text-gray-400 ml-2">（移動後の最初のスロットのみ適用）</span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={80}
+                    step={5}
+                    value={Math.round(penaltyRate * 100)}
+                    onChange={e => setSysMap(m => ({
+                      ...m,
+                      process_transition_penalty_rate: (parseInt(e.target.value) / 100).toFixed(2),
+                    }))}
+                    className="flex-1"
+                  />
+                  <span className="text-lg font-bold text-blue-600 w-14 text-right">
+                    {Math.round(penaltyRate * 100)}%
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>0%（ペナルティなし）</span>
+                  <span>80%（ほぼ停止）</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-2 bg-gray-50 rounded p-2">
+                  例）30%低下の場合、熟練度2（基礎生産性100%）で別工程へ移動すると<br />
+                  移動後の最初の15分スロットは 100% × 70% = 70% の処理能力になります。
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── その他の汎用システム条件 ── */}
           <div className="bg-white rounded-lg border overflow-hidden mb-4">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b">
@@ -104,17 +180,24 @@ export default function Conditions() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(sysMap).map(([key, val]) => (
-                  <tr key={key} className="border-b">
-                    <td className="px-4 py-3">{SYS_LABELS[key] ?? key}</td>
-                    <td className="px-4 py-3 text-center">
-                      <input value={val} onChange={e => setSysMap(m => ({ ...m, [key]: e.target.value }))} className="border rounded px-2 py-1 text-sm w-32 text-center" />
-                    </td>
-                  </tr>
-                ))}
+                {Object.entries(sysMap)
+                  .filter(([key]) => !PENALTY_KEYS.has(key))
+                  .map(([key, val]) => (
+                    <tr key={key} className="border-b">
+                      <td className="px-4 py-3">{GENERIC_SYS_KEYS[key] ?? key}</td>
+                      <td className="px-4 py-3 text-center">
+                        <input
+                          value={val}
+                          onChange={e => setSysMap(m => ({ ...m, [key]: e.target.value }))}
+                          className="border rounded px-2 py-1 text-sm w-32 text-center"
+                        />
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
+
           <button onClick={() => saveSys.mutate()} disabled={saveSys.isPending} className="bg-blue-600 text-white px-6 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-50">保存</button>
         </>
       )}

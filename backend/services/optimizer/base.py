@@ -83,6 +83,9 @@ class BaseOptimizer:
         # 残業可能者の最大勤務終了時刻。overtime_available=True の場合、
         # 通常の work_end_time を超えてこの時刻まで配置可能とする。
         self.overtime_max_end_time = conds.get("overtime_max_end_time", "20:00")
+        # 工程移動直後スロットの生産性ペナルティ（休憩なしで別工程へ移ったとき）
+        self.transition_penalty_enabled = conds.get("process_transition_penalty_enabled", "1") == "1"
+        self.transition_penalty_rate = float(conds.get("process_transition_penalty_rate", "0.30"))
 
         # Load skill productivity rates
         self.skill_rates = {
@@ -453,6 +456,26 @@ class BaseOptimizer:
         """Employee priority for assignment. Overridden per strategy."""
         return (float(emp.hourly_wage),)
 
+    def _transition_factor(self, emp_id: str, to_pid: str, slot: str,
+                           emp_assignments: Dict[str, Assignment],
+                           prev_slot_map: Dict[str, str]) -> float:
+        """工程移動直後の生産性係数。
+
+        直前スロットが休憩でなく、かつ別工程だった場合に (1 - penalty_rate) を返す。
+        ペナルティが無効のとき・前スロットが存在しないとき・同じ工程継続のときは 1.0。
+        """
+        if not self.transition_penalty_enabled:
+            return 1.0
+        ps = prev_slot_map.get(slot)
+        if ps is None:
+            return 1.0
+        prev_a = emp_assignments.get(ps)
+        if prev_a is None or prev_a.slot_type != "WORK":
+            return 1.0
+        if prev_a.process_id == to_pid:
+            return 1.0
+        return 1.0 - self.transition_penalty_rate
+
     def _run_flow(self, assignments: Dict[str, Dict[str, Assignment]]):
         """
         Forward flow simulation tied to assignment.
@@ -480,6 +503,9 @@ class BaseOptimizer:
         for pid, vmap in self.root_volume.items():
             for slot, vol in vmap.items():
                 incoming.setdefault(pid, {})[slot] = incoming.get(pid, {}).get(slot, 0.0) + vol
+
+        prev_slot = {s: all_slots[i - 1] if i > 0 else None
+                     for i, s in enumerate(all_slots)}
 
         for idx, slot in enumerate(all_slots):
             next_slot = all_slots[idx + 1] if idx + 1 < len(all_slots) else None
@@ -529,7 +555,9 @@ class BaseOptimizer:
                         assigned += 1
                         skill = self.skills.get(emp.employee_id, {}).get(pid, 1)
                         rate = self.skill_rates.get(skill, 1.0)
-                        _assigned_capacity += self.base_prod.get(pid, 0.0) * rate * self.slot_hours
+                        tf = self._transition_factor(emp.employee_id, pid, slot,
+                                                     emp_assignments, prev_slot)
+                        _assigned_capacity += self.base_prod.get(pid, 0.0) * rate * tf * self.slot_hours
                 slot_throughput[pid] = min(backlog[pid], _assigned_capacity)
 
             # 3b. 第2パス（モップアップ）：残務があるのに空き人員がいれば追加配置。
@@ -560,7 +588,9 @@ class BaseOptimizer:
                         )
                         skill = self.skills.get(emp.employee_id, {}).get(pid, 1)
                         rate = self.skill_rates.get(skill, 1.0)
-                        extra_capacity += self.base_prod.get(pid, 0.0) * rate * self.slot_hours
+                        tf = self._transition_factor(emp.employee_id, pid, slot,
+                                                     emp_assignments, prev_slot)
+                        extra_capacity += self.base_prod.get(pid, 0.0) * rate * tf * self.slot_hours
                         # 残務をカバーできた時点で追加配置を打ち切る
                         if extra_capacity >= remaining_backlog_before:
                             break
