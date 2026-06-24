@@ -355,9 +355,11 @@ def solve_mip(opt, objective_type: str,
         }
         return None
 
-    # 探索ノード数を検証パターン数として加算
+    # LP反復回数 + B&Bノード数を検証パターン数として加算
+    # nodes()=0はLP緩和で一発整数解が得られたことを意味する（正常）。
+    # iterations()はシンプレックス反復で実際の探索量を表す。
     try:
-        opt.patterns_evaluated += int(solver.nodes())
+        opt.patterns_evaluated += int(solver.iterations()) + int(solver.nodes())
     except Exception:
         pass
 
