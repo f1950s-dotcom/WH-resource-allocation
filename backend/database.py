@@ -37,6 +37,20 @@ def init_db():
             conn.execute(text(stmt))
         conn.commit()
 
+        # シードデータ（工程構成・従業員）: INSERT OR IGNORE なので既存行は保持
+        seed_path = os.path.join(os.path.dirname(__file__), "migrations", "seed_data.sql")
+        if os.path.exists(seed_path):
+            with open(seed_path, "r", encoding="utf-8") as f:
+                seed_content = f.read()
+            for raw in seed_content.split(";"):
+                # 行頭コメント(--)を除去してからステートメント化
+                stmt = "\n".join(
+                    ln for ln in raw.splitlines() if not ln.strip().startswith("--")
+                ).strip()
+                if stmt:
+                    conn.execute(text(stmt))
+            conn.commit()
+
         # Lightweight migrations for existing databases
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(optimization_results)"))]
         if "patterns_evaluated" not in cols:
