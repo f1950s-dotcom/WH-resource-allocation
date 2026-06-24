@@ -78,6 +78,13 @@ def init_db():
             ))
             conn.commit()
 
+        # overtime_max_end_time が無い既存DBには挿入する
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('overtime_max_end_time', '20:00', '残業可能な場合の最大勤務終了時刻')"
+        ))
+        conn.commit()
+
         # Lightweight migrations for existing databases
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(optimization_results)"))]
         if "patterns_evaluated" not in cols:

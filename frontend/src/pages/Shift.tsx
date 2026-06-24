@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getShifts, exportShifts, getProcesses, getVolumeExpansions, getProcessConnections, getVolumeRules, getVolumePlans } from '../api/client';
+import { getShifts, exportShifts, getProcesses, getVolumeExpansions, getProcessConnections, getVolumeRules, getVolumePlans, getAllEmployeeSkills, getSkillProductivityRates } from '../api/client';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -27,6 +27,8 @@ export default function Shift() {
   const { data: connections = [] } = useQuery({ queryKey: ['connections'], queryFn: getProcessConnections });
   const { data: volumeRules = [] } = useQuery({ queryKey: ['volumeRules'], queryFn: getVolumeRules });
   const { data: volumePlans = [] } = useQuery({ queryKey: ['volumePlans', date], queryFn: () => getVolumePlans(date) });
+  const { data: allSkills = {} } = useQuery({ queryKey: ['allSkills'], queryFn: getAllEmployeeSkills });
+  const { data: skillRates = {} } = useQuery({ queryKey: ['skillRates'], queryFn: getSkillProductivityRates });
 
   const procMap = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
   const procList = processes.map((p: any) => p.process_id);
@@ -107,20 +109,29 @@ export default function Shift() {
       planMap[`${vp.volume_type}__${vp.time_slot_start}`] = Number(vp.volume);
     });
 
-    const assignedCount: Record<string, Record<string, number>> = {};
-    activePids.forEach((pid: string) => { assignedCount[pid] = {}; });
+    const procMap2: Record<string, any> = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
+
+    // 配置された各人員の熟練度補正済み処理能力を合算する
+    // （単純な「人数 × base_prod」ではなく「Σ(base_prod × skill_rate)」でバックエンドと一致させる）
+    const assignedCapacity: Record<string, Record<string, number>> = {};
+    activePids.forEach((pid: string) => { assignedCapacity[pid] = {}; });
     employeeRows.forEach((emp: any) => {
       emp.slots.forEach((s: any) => {
         if (s.slot_type === 'WORK' && s.process_id) {
-          assignedCount[s.process_id][s.time_slot_start] = (assignedCount[s.process_id][s.time_slot_start] ?? 0) + 1;
+          const empSkills: any[] = (allSkills as any)[emp.employee_id] ?? [];
+          const skillEntry = empSkills.find((sk: any) => sk.process_id === s.process_id);
+          const skillLevel: number = skillEntry?.skill_level ?? 2;
+          const rate: number = (skillRates as any)[skillLevel] ?? 1.0;
+          const pid2 = s.process_id;
+          const bp = Number(procMap2[pid2]?.base_productivity ?? 0);
+          assignedCapacity[pid2][s.time_slot_start] = (assignedCapacity[pid2][s.time_slot_start] ?? 0) + bp * rate;
         }
       });
     });
 
-    const procMap2: Record<string, any> = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
     const allSlotsSet = new Set<string>();
     (volumePlans as any[]).forEach((vp: any) => allSlotsSet.add(vp.time_slot_start));
-    Object.values(assignedCount).forEach(m => Object.keys(m).forEach(s => allSlotsSet.add(s)));
+    Object.values(assignedCapacity).forEach(m => Object.keys(m).forEach(s => allSlotsSet.add(s)));
     const allSlotsSorted = [...allSlotsSet].sort();
 
     const SLOT_H = 15.0 / 60.0;
@@ -154,8 +165,8 @@ export default function Shift() {
 
         cumArrived[pid] += incoming;
         backlog[pid] += incoming;
-        const cnt = assignedCount[pid][slot] ?? 0;
-        const actualThroughput = Math.min(backlog[pid], cnt * bp * SLOT_H);
+        const slotCap = (assignedCapacity[pid][slot] ?? 0) * SLOT_H;
+        const actualThroughput = Math.min(backlog[pid], slotCap);
         backlog[pid] -= actualThroughput;
         cumProcessed[pid] += actualThroughput;
         throughput[pid][slot] = actualThroughput;

@@ -77,6 +77,9 @@ class BaseOptimizer:
         self.lunch_break_duration = int(conds.get("lunch_break_duration_minutes", "60"))
         self.legal_break_threshold = int(conds.get("legal_break_threshold_minutes", "360"))
         self.legal_break_minutes = int(conds.get("legal_break_minutes", "45"))
+        # 残業可能者の最大勤務終了時刻。overtime_available=True の場合、
+        # 通常の work_end_time を超えてこの時刻まで配置可能とする。
+        self.overtime_max_end_time = conds.get("overtime_max_end_time", "20:00")
 
         # Load skill productivity rates
         self.skill_rates = {
@@ -109,11 +112,19 @@ class BaseOptimizer:
             if e.employee_id in self.work_conditions
         ]
 
-        # Build employee available slots (before breaks)
+        # Build employee available slots (before breaks).
+        # overtime_available=True の場合、通常の work_end_time を超えて
+        # overtime_max_end_time まで配置可能スロットを延長する。
+        # これにより残務がある限り残業可能者を配置できる。
         self.employee_available_slots: Dict[str, List[str]] = {}
         for emp in self.active_employees:
             cond = self.work_conditions[emp.employee_id]
-            slots = _generate_slots(cond.work_start_time, cond.work_end_time, self.slot_minutes)
+            end_time = cond.work_end_time
+            if cond.overtime_available:
+                # overtime_max_end_time が定時より後であれば延長
+                if _parse_time(self.overtime_max_end_time) > _parse_time(end_time):
+                    end_time = self.overtime_max_end_time
+            slots = _generate_slots(cond.work_start_time, end_time, self.slot_minutes)
             self.employee_available_slots[emp.employee_id] = slots
 
         # Load active processes and their base productivity

@@ -357,3 +357,10 @@ def update_system_conditions(body: SystemConditionsUpdate, db: Session = Depends
             db.add(cond)
     db.commit()
     return db.query(SystemCondition).all()
+
+
+@router.get("/skill-productivity-rates")
+def get_skill_productivity_rates(db: Session = Depends(get_db)):
+    from models import SkillLevelProductivityRate
+    rates = db.query(SkillLevelProductivityRate).all()
+    return {r.skill_level: float(r.productivity_rate) for r in rates}
