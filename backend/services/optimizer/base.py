@@ -505,6 +505,8 @@ class BaseOptimizer:
                             incoming[down_pid].get(next_slot, 0.0) + throughput * rate
                         )
 
+        return sum(backlog.values())
+
     # ------------------------------------------------------------------
     # Objective and refinement engines (shared by all result types)
     # ------------------------------------------------------------------
@@ -733,6 +735,9 @@ class BaseOptimizer:
 
         max_candidates: 試みる上位高コスト従業員の最大数（計算時間上限のため）。
         改善が見つかった場合のみ次の候補へ進む（1パス）。
+
+        残業務（backlog）が増えない場合のみ解雇を受け入れる。
+        backlogが増えると業務未完了のまま人が帰宅してしまうため。
         """
         emps_by_wage = sorted(
             self.active_employees, key=lambda e: -float(e.hourly_wage)
@@ -744,6 +749,14 @@ class BaseOptimizer:
         ][:max_candidates]
 
         base_obj = self._objective(assignments)
+
+        # 現状のbacklogを計算するため、trial実行時のbacklogを比較基準として使う
+        # 初回は現行割当を再シミュレートして取得する
+        _ref_trial: Dict[str, Dict[str, Assignment]] = {
+            e.employee_id: {} for e in self.active_employees
+        }
+        self._assign_lunch_breaks(_ref_trial)
+        base_backlog = self._run_flow(_ref_trial)
 
         for emp in candidates:
             eid = emp.employee_id
@@ -760,11 +773,12 @@ class BaseOptimizer:
                 e.employee_id: {} for e in self.active_employees
             }
             self._assign_lunch_breaks(trial)
-            self._run_flow(trial)
+            trial_backlog = self._run_flow(trial)
 
             trial_obj = self._objective(trial)
 
-            if trial_obj < base_obj - 1e-9:
+            # 解雇を受け入れる条件：コスト改善 かつ backlogが増えない
+            if trial_obj < base_obj - 1e-9 and trial_backlog <= base_backlog + 1e-6:
                 # Better without this worker — adopt the trial solution
                 for e in self.active_employees:
                     assignments[e.employee_id] = trial[e.employee_id]
@@ -772,6 +786,7 @@ class BaseOptimizer:
                     if a.slot_type == "WORK":
                         del assignments[eid][slot]
                 base_obj = trial_obj
+                base_backlog = trial_backlog
                 # 次の候補も時給降順で継続（while不要、forで十分）
             else:
                 self.active_employees = saved_active
