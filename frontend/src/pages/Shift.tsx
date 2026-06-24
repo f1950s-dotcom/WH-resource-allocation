@@ -19,7 +19,6 @@ export default function Shift() {
   const navigate = useNavigate();
   const [date, setDate] = useState(params.get('date') ?? today());
   const [tab, setTab] = useState<'employee' | 'process' | 'graph'>('employee');
-  const [graphProcess, setGraphProcess] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
 
   const { data: shifts } = useQuery({ queryKey: ['shifts', date], queryFn: () => getShifts(date) });
@@ -97,20 +96,17 @@ export default function Shift() {
     return order;
   }
 
-  // Assignment-based flow simulation across all processes
-  const simulationData: Record<string, Array<{ slot: string; 必要人員: number; 配置人員: number; 処理量: number; 処理残量: number }>> = (() => {
+  // Assignment-based flow simulation: returns per-process cumulative arrived/processed
+  const simCumData: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number }>> = (() => {
     const activePids = processes.map((p: any) => p.process_id);
     if (!activePids.length || !volumePlans.length) return {};
 
     const procOrder = topoSort(activePids, upstreamOf);
-
-    // plan_map: (source_type, slot) -> volume
     const planMap: Record<string, number> = {};
     (volumePlans as any[]).forEach((vp: any) => {
       planMap[`${vp.volume_type}__${vp.time_slot_start}`] = Number(vp.volume);
     });
 
-    // assigned count per process per slot
     const assignedCount: Record<string, Record<string, number>> = {};
     activePids.forEach((pid: string) => { assignedCount[pid] = {}; });
     employeeRows.forEach((emp: any) => {
@@ -122,18 +118,18 @@ export default function Shift() {
     });
 
     const procMap2: Record<string, any> = Object.fromEntries(processes.map((p: any) => [p.process_id, p]));
-
-    // Collect all slots
     const allSlotsSet = new Set<string>();
     (volumePlans as any[]).forEach((vp: any) => allSlotsSet.add(vp.time_slot_start));
     Object.values(assignedCount).forEach(m => Object.keys(m).forEach(s => allSlotsSet.add(s)));
     const allSlotsSorted = [...allSlotsSet].sort();
 
     const SLOT_H = 15.0 / 60.0;
-    const backlog: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
-    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map((pid: string) => [pid, {}]));
-    const result: Record<string, Array<{ slot: string; 必要人員: number; 配置人員: number; 処理量: number; 処理残量: number }>> = {};
-    activePids.forEach((pid: string) => { result[pid] = []; });
+    const backlog: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
+    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map(pid => [pid, {}]));
+    const cumArrived: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
+    const cumProcessed: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
+    const result: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number }>> = {};
+    activePids.forEach(pid => { result[pid] = []; });
 
     for (let idx = 0; idx < allSlotsSorted.length; idx++) {
       const slot = allSlotsSorted[idx];
@@ -156,22 +152,19 @@ export default function Shift() {
           incoming = upPrevThroughput * (rule?.rate ?? 1);
         }
 
+        cumArrived[pid] += incoming;
         backlog[pid] += incoming;
-        const workPresent = backlog[pid];
         const cnt = assignedCount[pid][slot] ?? 0;
-        const actualThroughput = Math.min(workPresent, cnt * bp * SLOT_H);
-        backlog[pid] = workPresent - actualThroughput;
+        const actualThroughput = Math.min(backlog[pid], cnt * bp * SLOT_H);
+        backlog[pid] -= actualThroughput;
+        cumProcessed[pid] += actualThroughput;
         throughput[pid][slot] = actualThroughput;
 
-        const requiredPersonSlots = bp > 0 ? workPresent / (bp * SLOT_H) : 0;
-
-        if (workPresent > 0 || cnt > 0) {
+        if (cumArrived[pid] > 0 || cumProcessed[pid] > 0) {
           result[pid].push({
             slot,
-            必要人員: Math.round(requiredPersonSlots * 10) / 10,
-            配置人員: cnt,
-            処理量: Math.round(actualThroughput * 10) / 10,
-            処理残量: Math.round(backlog[pid] * 10) / 10,
+            発生量累計: Math.round(cumArrived[pid] * 10) / 10,
+            処理実績累計: Math.round(cumProcessed[pid] * 10) / 10,
           });
         }
       }
@@ -179,11 +172,18 @@ export default function Shift() {
     return result;
   })();
 
-  const simProcIds = Object.keys(simulationData).filter(pid => simulationData[pid].length > 0);
-  const expansionProcIds = simProcIds.length ? simProcIds : [...new Set(expansions.map((e: any) => e.process_id as string))] as string[];
-  const selectedProc = graphProcess || expansionProcIds[0] || '';
-
-  const graphData = simulationData[selectedProc] ?? [];
+  // Group processes by line_type for two separate graphs
+  const lineTypeGroups: Record<string, string[]> = {};
+  processes.forEach((p: any) => {
+    const lt = p.line_type ?? 'OTHER';
+    if (!lineTypeGroups[lt]) lineTypeGroups[lt] = [];
+    lineTypeGroups[lt].push(p.process_id);
+  });
+  const LINE_TYPE_LABELS: Record<string, string> = {
+    INBOUND: '入庫系',
+    OUTBOUND: '出庫系',
+  };
+  const lineTypes = Object.keys(lineTypeGroups).sort();
 
   return (
     <div className="p-6">
@@ -301,55 +301,65 @@ export default function Shift() {
           </table>
         </div>
       ) : (
-        /* 稼働グラフ */
-        <div className="bg-white rounded-lg border p-4">
-          <div className="flex items-center gap-3 mb-4">
-            <span className="text-sm text-gray-600">工程：</span>
-            <div className="flex gap-2 flex-wrap">
-              {expansionProcIds.map((pid, i) => (
-                <button
-                  key={pid}
-                  onClick={() => setGraphProcess(pid)}
-                  className={`px-3 py-1 rounded text-xs font-medium border transition-colors ${selectedProc === pid ? 'text-white border-transparent' : 'text-gray-600 bg-white'}`}
-                  style={selectedProc === pid ? { backgroundColor: CHART_COLORS[i % CHART_COLORS.length] } : {}}
-                >
-                  {procMap[pid]?.process_name ?? pid}
-                </button>
-              ))}
+        /* 稼働グラフ：入庫系・出庫系それぞれの累積処理グラフ */
+        <div className="space-y-6">
+          {lineTypes.length === 0 ? (
+            <div className="bg-white rounded-lg border p-12 text-center text-gray-400">
+              <p>工程データがありません</p>
             </div>
-          </div>
+          ) : lineTypes.map(lt => {
+            const pids = lineTypeGroups[lt].filter(pid => simCumData[pid]?.length > 0);
+            const label = LINE_TYPE_LABELS[lt] ?? lt;
 
-          {graphData.length > 0 && selectedProc ? (
-            <>
-              <div className="mb-2 text-xs text-gray-500 flex gap-4 flex-wrap">
-                <span><span className="font-medium">必要人員</span>：そのスロットの作業量を捌くのに必要な人数</span>
-                <span><span className="font-medium">配置人員</span>：実際に配置された人数</span>
-                <span><span className="font-medium">処理残量</span>：配置人員で処理後の積み残し物量（配置ベース）</span>
+            // Merge all slots across processes in this line group
+            const slotSet = new Set<string>();
+            pids.forEach(pid => simCumData[pid].forEach(d => slotSet.add(d.slot)));
+            const slots = [...slotSet].sort();
+
+            // Build chart data: one row per slot, columns per process x {発生, 処理}
+            const chartData = slots.map(slot => {
+              const row: Record<string, any> = { slot };
+              pids.forEach((pid, i) => {
+                const name = procMap[pid]?.process_name ?? pid;
+                const point = simCumData[pid].find(d => d.slot === slot);
+                row[`${name}_発生`] = point?.発生量累計 ?? null;
+                row[`${name}_処理`] = point?.処理実績累計 ?? null;
+              });
+              return row;
+            });
+
+            return (
+              <div key={lt} className="bg-white rounded-lg border p-4">
+                <h3 className="font-semibold text-gray-700 mb-1 text-sm">{label}</h3>
+                <div className="mb-2 text-xs text-gray-400 flex gap-4">
+                  <span>実線：処理実績累計 　破線：処理発生量累計</span>
+                </div>
+                {chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={320}>
+                    <ComposedChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="slot" angle={-60} textAnchor="end" tick={{ fontSize: 10 }} interval={1} />
+                      <YAxis label={{ value: '累積処理量', angle: -90, position: 'insideLeft', fontSize: 11 }} />
+                      <Tooltip formatter={(value: any, name: string) => [`${Number(value).toLocaleString()}`, name]} />
+                      <Legend verticalAlign="top" wrapperStyle={{ fontSize: 11 }} />
+                      {pids.map((pid, i) => {
+                        const name = procMap[pid]?.process_name ?? pid;
+                        const color = CHART_COLORS[i % CHART_COLORS.length];
+                        return [
+                          <Line key={`${pid}_発生`} type="monotone" dataKey={`${name}_発生`} stroke={color} strokeWidth={1.5} strokeDasharray="5 3" dot={false} name={`${name} 発生累計`} connectNulls />,
+                          <Line key={`${pid}_処理`} type="monotone" dataKey={`${name}_処理`} stroke={color} strokeWidth={2} dot={false} name={`${name} 処理累計`} connectNulls />,
+                        ];
+                      })}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="text-center text-gray-400 py-8 text-sm">
+                    {!shifts ? 'シフトを選択すると処理実績累計が表示されます' : '物量展開を実行してください'}
+                  </div>
+                )}
               </div>
-              <ResponsiveContainer width="100%" height={380}>
-                <ComposedChart data={graphData} margin={{ top: 5, right: 20, left: 10, bottom: 60 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="slot" angle={-60} textAnchor="end" tick={{ fontSize: 10 }} interval={1} />
-                  <YAxis yAxisId="left" label={{ value: '人員数', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-                  <YAxis yAxisId="right" orientation="right" label={{ value: '積み残し量', angle: 90, position: 'insideRight', fontSize: 11 }} />
-                  <Tooltip formatter={(value: any, name: string) => [
-                    (name === '処理残量' || name === '処理量') ? `${Number(value).toLocaleString()} 個` : `${value} 人`,
-                    name,
-                  ]} />
-                  <Legend verticalAlign="top" />
-                  <Bar yAxisId="left" dataKey="必要人員" fill="#bfdbfe" name="必要人員" />
-                  <Bar yAxisId="left" dataKey="配置人員" fill="#3b82f6" name="配置人員" />
-                  <Line yAxisId="right" type="monotone" dataKey="処理量" stroke="#22c55e" strokeWidth={2} dot={false} name="処理量" />
-                  <Line yAxisId="right" type="monotone" dataKey="処理残量" stroke="#ef4444" strokeWidth={2} dot={false} name="処理残量" />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </>
-          ) : (
-            <div className="text-center text-gray-400 py-12">
-              <p>物量展開データがありません</p>
-              <p className="text-sm mt-1">物量展開を実行してください</p>
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
 

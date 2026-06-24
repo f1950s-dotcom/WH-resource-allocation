@@ -61,7 +61,16 @@ def solve_mip(opt, objective_type: str,
     }
 
     processes = opt.process_order
-    cap_per_person = {p: opt.base_prod.get(p, 0.0) * slot_hours for p in processes}
+    # Base capacity check (used to prune processes with 0 productivity)
+    cap_base = {p: opt.base_prod.get(p, 0.0) * slot_hours for p in processes}
+    # Per-employee per-process capacity (skill-adjusted)
+    emp_proc_cap: Dict = {}
+    for e in employees:
+        eid = e.employee_id
+        for p in processes:
+            skill = opt.skills.get(eid, {}).get(p, 1)
+            rate = opt.skill_rates.get(skill, 1.0)
+            emp_proc_cap[(eid, p)] = opt.base_prod.get(p, 0.0) * rate * slot_hours
     # 各工程の唯一の上流（topo前提）
     upstream_of: Dict[str, Optional[str]] = {}
     for up, downs in opt.downstream_of.items():
@@ -78,7 +87,7 @@ def solve_mip(opt, objective_type: str,
         skills = opt.skills.get(eid, {})
         brk = emp_break_slots.get(eid, set())
         for p in processes:
-            if cap_per_person[p] <= 0 or p not in skills:
+            if cap_base[p] <= 0 or p not in skills:
                 continue
             for s in avail:
                 if s in brk or s not in slot_idx:
@@ -127,14 +136,19 @@ def solve_mip(opt, objective_type: str,
         for t in range(T):
             proc[(p, t)] = solver.NumVar(0.0, INF, f"proc_{p}_{t}")
 
-    # 能力上限： proc[p,t] <= (配置人数) * cap_per_person
+    # 能力上限： proc[p,t] <= Σ_e x[e,p,t] * (bp * skill_rate_e_p * slot_hours)
+    # 各従業員の習熟レベルに応じた個別能力を係数として使う
     for p in processes:
-        cap = cap_per_person[p]
         for t in range(T):
             s = all_slots[t]
-            headcount = [x[(e.employee_id, p, s)] for e in employees
-                         if (e.employee_id, p, s) in x]
-            solver.Add(proc[(p, t)] <= cap * sum(headcount) if headcount else proc[(p, t)] <= 0)
+            cap_terms = [
+                emp_proc_cap[(e.employee_id, p)] * x[(e.employee_id, p, s)]
+                for e in employees if (e.employee_id, p, s) in x
+            ]
+            if cap_terms:
+                solver.Add(proc[(p, t)] <= sum(cap_terms))
+            else:
+                solver.Add(proc[(p, t)] <= 0)
 
     # 到着量 arrived[p,t]（線形式）と累積制約：届いた分しか処理できない
     def arrived_expr(p, t):

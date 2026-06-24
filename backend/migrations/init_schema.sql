@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS optimization_assignments (
 );
 
 -- 初期データ
-INSERT OR IGNORE INTO skill_level_productivity_rates (skill_level, productivity_rate) VALUES (1, 0.70);
+INSERT OR IGNORE INTO skill_level_productivity_rates (skill_level, productivity_rate) VALUES (1, 0.80);
 INSERT OR IGNORE INTO skill_level_productivity_rates (skill_level, productivity_rate) VALUES (2, 1.00);
 INSERT OR IGNORE INTO skill_level_productivity_rates (skill_level, productivity_rate) VALUES (3, 1.20);
 

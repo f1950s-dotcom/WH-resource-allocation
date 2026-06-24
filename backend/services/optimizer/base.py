@@ -467,6 +467,7 @@ class BaseOptimizer:
                     key=lambda e: self._emp_sort_key(e, pid, slot, assignments),
                 )
                 assigned = 0
+                _assigned_capacity = 0.0
                 for emp in sorted_emps:
                     if assigned >= need:
                         break
@@ -485,10 +486,13 @@ class BaseOptimizer:
                             slot_cost=cost,
                         )
                         assigned += 1
+                        # Accumulate skill-adjusted capacity for this employee
+                        skill = self.skills.get(emp.employee_id, {}).get(pid, 1)
+                        rate = self.skill_rates.get(skill, 1.0)
+                        _assigned_capacity += self.base_prod.get(pid, 0.0) * rate * self.slot_hours
 
-                # Actual throughput from real headcount
-                capacity = assigned * self.base_prod.get(pid, 0.0) * self.slot_hours
-                throughput = min(backlog[pid], capacity)
+                # Actual throughput: sum of each assigned employee's skill-adjusted capacity
+                throughput = min(backlog[pid], _assigned_capacity)
                 backlog[pid] -= throughput
 
                 # 4. Propagate to downstream with 15-min lag

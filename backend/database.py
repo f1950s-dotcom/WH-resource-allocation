@@ -44,3 +44,13 @@ def init_db():
                 "ALTER TABLE optimization_results ADD COLUMN patterns_evaluated INTEGER NOT NULL DEFAULT 0"
             ))
             conn.commit()
+
+        # Skill level 1 was 0.70; correct to 0.80 for existing databases
+        row = conn.execute(text(
+            "SELECT productivity_rate FROM skill_level_productivity_rates WHERE skill_level=1"
+        )).fetchone()
+        if row and abs(float(row[0]) - 0.70) < 0.01:
+            conn.execute(text(
+                "UPDATE skill_level_productivity_rates SET productivity_rate=0.80 WHERE skill_level=1"
+            ))
+            conn.commit()
