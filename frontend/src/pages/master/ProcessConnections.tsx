@@ -27,17 +27,22 @@ export default function ProcessConnections() {
   const renderChain = (procs: any[]) => {
     const ids = procs.map((p: any) => p.process_id);
     const ordered: any[] = [];
+    const seen = new Set<string>();
     const toIds = new Set(connections.map((c: any) => c.to_process_id));
     const roots = procs.filter((p: any) => !toIds.has(p.process_id));
     const visit = (id: string) => {
+      // 循環・重複ガード：一度たどったノードは再訪しない（無限再帰防止）
+      if (seen.has(id)) return;
       const p = procMap[id];
       if (!p || !ids.includes(id)) return;
+      seen.add(id);
       ordered.push(p);
       const next = connections.find((c: any) => c.from_process_id === id && ids.includes(c.to_process_id));
       if (next) visit(next.to_process_id);
     };
     roots.forEach(r => visit(r.process_id));
-    procs.filter(p => !ordered.find(o => o.process_id === p.process_id)).forEach(p => ordered.push(p));
+    // ルートからたどれなかった工程（循環内など）も漏れなく表示
+    procs.filter(p => !seen.has(p.process_id)).forEach(p => { seen.add(p.process_id); ordered.push(p); });
     return ordered;
   };
 
@@ -76,7 +81,7 @@ export default function ProcessConnections() {
             <option value="">後工程を選択</option>
             {processes.map((p: any) => <option key={p.process_id} value={p.process_id}>{p.process_name}</option>)}
           </select>
-          <button onClick={() => addMut.mutate()} disabled={!fromId || !toId} className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-40">追加</button>
+          <button onClick={() => addMut.mutate()} disabled={!fromId || !toId || fromId === toId} className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 disabled:opacity-40">追加</button>
         </div>
       </div>
 
