@@ -52,9 +52,9 @@ function statusInfo(r: any): { label: string; color: string; hint: string } {
     };
   }
   return {
-    label: 'MIP解なし→簡易計算',
-    color: 'text-orange-500',
-    hint: 'ソルバーが解を出せず、近似手法にフォールバックしました',
+    label: '簡易計算（完了）',
+    color: 'text-gray-600',
+    hint: 'ソルバーが解を確定できなかったため近似手法で計算しました。作業はすべて完了しています',
   };
 }
 

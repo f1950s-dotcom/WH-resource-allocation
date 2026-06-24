@@ -159,6 +159,35 @@ def solve_mip(opt, objective_type: str,
         if ups:
             solver.Add(sum(ups) <= 1)
 
+    # ---- 工程移動ペナルティ変数 pen[e,p,t] ----
+    # pen[e,p,t]=1 は「従業員eがスロットtで工程pに就労かつ直前スロットに
+    # 別工程で就労していた」ことを表す（＝移動直後スロット）。
+    # x[e,p,t] と other[e,p,t-1]=Σ_{p2≠p} x[e,p2,t-1] の積をMcCormick
+    # 線形化（product of two [0,1] vars）で表現する。
+    pen: Dict = {}
+    penalty_enabled = getattr(opt, "transition_penalty_enabled", False)
+    penalty_rate = getattr(opt, "transition_penalty_rate", 0.30)
+    if penalty_enabled and penalty_rate > 0:
+        for (eid, p, s), xvar in x.items():
+            t = slot_idx[s]
+            if t == 0:
+                continue
+            s_prev = all_slots[t - 1]
+            # 前スロットで別工程に就労していた場合にのみペナルティが発生
+            other_terms = [
+                x[(eid, p2, s_prev)]
+                for p2 in processes if p2 != p and (eid, p2, s_prev) in x
+            ]
+            if not other_terms:
+                continue
+            pen_var = solver.BoolVar(f"pen_{eid}_{p}_{t}")
+            other_sum = sum(other_terms)
+            # McCormick: pen = x * other_sum  (both in [0,1])
+            solver.Add(pen_var <= xvar)
+            solver.Add(pen_var <= other_sum)
+            solver.Add(pen_var >= xvar + other_sum - 1)
+            pen[(eid, p, s)] = pen_var
+
     # ---- 処理量 proc[p,t] と フロー制約 ----
     proc: Dict = {}
     INF = solver.infinity()
@@ -166,15 +195,21 @@ def solve_mip(opt, objective_type: str,
         for t in range(T):
             proc[(p, t)] = solver.NumVar(0.0, INF, f"proc_{p}_{t}")
 
-    # 能力上限： proc[p,t] <= Σ_e x[e,p,t] * (bp * skill_rate_e_p * slot_hours)
-    # 各従業員の習熟レベルに応じた個別能力を係数として使う
+    # 能力上限： proc[p,t] <= Σ_e x[e,p,t] * cap - Σ_e pen[e,p,t] * cap * penalty_rate
+    # ペナルティが有効な場合は移動直後スロットの容量を減額する
     for p in processes:
         for t in range(T):
             s = all_slots[t]
-            cap_terms = [
-                emp_proc_cap[(e.employee_id, p)] * x[(e.employee_id, p, s)]
-                for e in employees if (e.employee_id, p, s) in x
-            ]
+            cap_terms = []
+            for e in employees:
+                eid = e.employee_id
+                if (eid, p, s) not in x:
+                    continue
+                cap = emp_proc_cap[(eid, p)]
+                term = cap * x[(eid, p, s)]
+                if (eid, p, s) in pen:
+                    term = term - cap * penalty_rate * pen[(eid, p, s)]
+                cap_terms.append(term)
             if cap_terms:
                 solver.Add(proc[(p, t)] <= sum(cap_terms))
             else:
