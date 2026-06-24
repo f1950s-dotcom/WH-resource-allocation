@@ -12,6 +12,7 @@ export const updateEmployee = (id: string, data: Partial<{ name: string; hourly_
 export const deleteEmployee = (id: string) => api.delete(`/api/employees/${id}`).then(r => r.data);
 
 // Employee Skills  →  /api/employees/{id}/skills
+export const getAllEmployeeSkills = () => api.get('/api/employees/all-skills').then(r => r.data);
 export const getEmployeeSkills = (employeeId: string) => api.get(`/api/employees/${employeeId}/skills`).then(r => r.data);
 export const updateEmployeeSkills = (employeeId: string, skills: { process_id: string; skill_level: number }[]) => api.put(`/api/employees/${employeeId}/skills`, { skills }).then(r => r.data);
 

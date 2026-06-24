@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getShifts, exportShifts, getProcesses, getVolumeExpansions, getProcessConnections, getVolumeRules, getVolumePlans } from '../api/client';
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -23,7 +23,7 @@ export default function Shift() {
 
   const { data: shifts } = useQuery({ queryKey: ['shifts', date], queryFn: () => getShifts(date) });
   const { data: processes = [] } = useQuery({ queryKey: ['processes'], queryFn: getProcesses });
-  const { data: expansions = [] } = useQuery({ queryKey: ['expansions', date], queryFn: () => getVolumeExpansions(date) });
+  useQuery({ queryKey: ['expansions', date], queryFn: () => getVolumeExpansions(date) });
   const { data: connections = [] } = useQuery({ queryKey: ['connections'], queryFn: getProcessConnections });
   const { data: volumeRules = [] } = useQuery({ queryKey: ['volumeRules'], queryFn: getVolumeRules });
   const { data: volumePlans = [] } = useQuery({ queryKey: ['volumePlans', date], queryFn: () => getVolumePlans(date) });
@@ -124,12 +124,12 @@ export default function Shift() {
     const allSlotsSorted = [...allSlotsSet].sort();
 
     const SLOT_H = 15.0 / 60.0;
-    const backlog: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
-    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map(pid => [pid, {}]));
-    const cumArrived: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
-    const cumProcessed: Record<string, number> = Object.fromEntries(activePids.map(pid => [pid, 0]));
+    const backlog: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
+    const throughput: Record<string, Record<string, number>> = Object.fromEntries(activePids.map((pid: string) => [pid, {}]));
+    const cumArrived: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
+    const cumProcessed: Record<string, number> = Object.fromEntries(activePids.map((pid: string) => [pid, 0]));
     const result: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number }>> = {};
-    activePids.forEach(pid => { result[pid] = []; });
+    activePids.forEach((pid: string) => { result[pid] = []; });
 
     for (let idx = 0; idx < allSlotsSorted.length; idx++) {
       const slot = allSlotsSorted[idx];
@@ -319,7 +319,7 @@ export default function Shift() {
             // Build chart data: one row per slot, columns per process x {発生, 処理}
             const chartData = slots.map(slot => {
               const row: Record<string, any> = { slot };
-              pids.forEach((pid, i) => {
+              pids.forEach((pid) => {
                 const name = procMap[pid]?.process_name ?? pid;
                 const point = simCumData[pid].find(d => d.slot === slot);
                 row[`${name}_発生`] = point?.発生量累計 ?? null;
@@ -340,7 +340,7 @@ export default function Shift() {
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="slot" angle={-60} textAnchor="end" tick={{ fontSize: 10 }} interval={1} />
                       <YAxis label={{ value: '累積処理量', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-                      <Tooltip formatter={(value: any, name: string) => [`${Number(value).toLocaleString()}`, name]} />
+                      <Tooltip formatter={(value: any) => [`${Number(value).toLocaleString()}`]} />
                       <Legend verticalAlign="top" wrapperStyle={{ fontSize: 11 }} />
                       {pids.map((pid, i) => {
                         const name = procMap[pid]?.process_name ?? pid;

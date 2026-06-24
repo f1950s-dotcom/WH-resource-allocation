@@ -88,6 +88,18 @@ def delete_employee(employee_id: str, db: Session = Depends(get_db)):
 
 # ─── Employee Skills ──────────────────────────────────────────────────────────
 
+@router.get("/employees/all-skills")
+def get_all_skills(db: Session = Depends(get_db)):
+    """全従業員のスキルを一括取得 {employee_id: [{process_id, skill_level}]}"""
+    skills = db.query(EmployeeProcessSkill).all()
+    result: dict = {}
+    for s in skills:
+        result.setdefault(s.employee_id, []).append(
+            {"process_id": s.process_id, "skill_level": s.skill_level}
+        )
+    return result
+
+
 @router.get("/employees/{employee_id}/skills", response_model=List[SkillResponse])
 def get_employee_skills(employee_id: str, db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
@@ -248,6 +260,20 @@ def delete_process(process_id: str, db: Session = Depends(get_db)):
     proc = db.query(Process).filter(Process.process_id == process_id).first()
     if not proc:
         raise HTTPException(status_code=404, detail="Process not found")
+    # 関連する接続・スキル・変換ルール・期限を先に削除（FK孤立防止）
+    db.query(ProcessConnection).filter(
+        (ProcessConnection.from_process_id == process_id) |
+        (ProcessConnection.to_process_id == process_id)
+    ).delete(synchronize_session=False)
+    db.query(EmployeeProcessSkill).filter(
+        EmployeeProcessSkill.process_id == process_id
+    ).delete(synchronize_session=False)
+    db.query(VolumeConversionRule).filter(
+        VolumeConversionRule.process_id == process_id
+    ).delete(synchronize_session=False)
+    db.query(ProcessDeadlineCondition).filter(
+        ProcessDeadlineCondition.process_id == process_id
+    ).delete(synchronize_session=False)
     db.delete(proc)
     db.commit()
 
