@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { runOptimization, getOptimizationResults, selectOptimizationResult } from '../api/client';
+import {
+  runOptimization, getOptimizationResults, selectOptimizationResult,
+  getOptimizationStatus,
+} from '../api/client';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -16,6 +19,44 @@ const RESULT_DESC: Record<string, string> = {
   CHEAPEST: '期限を守りつつコストを最小化',
   LEAST_MOVE: '期限を守りつつ工程移動を最小化',
 };
+
+const ENGINE_LABELS: Record<string, string> = {
+  GREEDY: '貪欲＋局所探索（高速）',
+  ANNEALING: '焼きなまし法（探索多・中速）',
+  ORTOOLS: 'OR-Toolsソルバー（最適志向・低速）',
+};
+const ENGINE_ORDER = ['GREEDY', 'ANNEALING', 'ORTOOLS'] as const;
+
+// ソルバーの状態を「意味が分かる日本語」に変換する
+function statusInfo(r: any): { label: string; color: string; hint: string } {
+  const s = r.solver_status;
+  if (r.calculation_method === 'GREEDY' || s === 'HEURISTIC') {
+    return {
+      label: '高速ヒューリスティック',
+      color: 'text-gray-600',
+      hint: '厳密最適化は行わず、高速な近似手法で解いた結果です',
+    };
+  }
+  if (s === 'OPTIMAL') {
+    return {
+      label: '最適解を確認 ✓',
+      color: 'text-green-600',
+      hint: '時間内に「これ以上良い解は存在しない」ことを証明できた厳密最適解です',
+    };
+  }
+  if (s === 'FEASIBLE') {
+    return {
+      label: '時間内の最良解',
+      color: 'text-blue-600',
+      hint: '時間切れで打ち切り。実用上は十分ですが、最適である証明はできていません',
+    };
+  }
+  return {
+    label: 'MIP解なし→簡易計算',
+    color: 'text-orange-500',
+    hint: 'ソルバーが解を出せず、近似手法にフォールバックしました',
+  };
+}
 
 export default function Optimization() {
   const [params, setParams] = useSearchParams();
@@ -42,22 +83,37 @@ export default function Optimization() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['optResults', date] }); navigate(`/shift?date=${date}`); },
   });
 
+  // 計算完了はサーバーの実行状態(running)で判定する。
+  // エンジン別に結果が蓄積されるため、件数では新しい計算の完了を判定できない。
   useEffect(() => {
     if (polling) {
       pollRef.current = setInterval(async () => {
-        const res = await refetch();
-        if (res.data && res.data.length >= 3) {
-          setPolling(false);
-          if (pollRef.current) clearInterval(pollRef.current);
+        try {
+          const st = await getOptimizationStatus(date);
+          if (!st.running) {
+            await refetch();
+            setPolling(false);
+            if (pollRef.current) clearInterval(pollRef.current);
+          }
+        } catch {
+          // ネットワーク一時失敗は次回ポーリングで回復
         }
-      }, 2000);
+      }, 1500);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [polling]);
 
+  // エンジン別にグルーピング（実際に結果のあるエンジンのみ表示）
+  const enginesWithResults = ENGINE_ORDER.filter(
+    eng => (results as any[]).some(r => (r.calculation_method ?? 'GREEDY') === eng)
+  );
+
   return (
     <div className="p-6">
-      <h1 className="text-xl font-bold text-gray-800 mb-4">人員配置最適化提案</h1>
+      <h1 className="text-xl font-bold text-gray-800 mb-1">人員配置最適化提案</h1>
+      <p className="text-xs text-gray-400 mb-4">
+        計算エンジンを変えて実行すると、結果はエンジンごとに残り、下に並べて比較できます。
+      </p>
       <div className="flex gap-4 items-end mb-6">
         <div>
           <label className="block text-xs text-gray-500 mb-1">対象日</label>
@@ -81,65 +137,103 @@ export default function Optimization() {
         {polling && (
           <div className="flex items-center gap-2 text-sm text-gray-500">
             <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            3案を計算しています...
+            {ENGINE_LABELS[method]} で計算中...
           </div>
         )}
       </div>
 
-      {results.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          {(['FASTEST', 'CHEAPEST', 'LEAST_MOVE'] as const).map(type => {
-            const r = results.find((x: any) => x.result_type === type);
-            if (!r) return (
-              <div key={type} className="bg-white rounded-lg border p-5 animate-pulse">
-                <div className="h-4 bg-gray-200 rounded mb-3" />
-                <div className="h-3 bg-gray-100 rounded mb-2" />
-                <div className="h-3 bg-gray-100 rounded" />
-              </div>
+      {enginesWithResults.length > 0 ? (
+        <div className="space-y-8">
+          {enginesWithResults.map(engine => {
+            const engineResults = (results as any[]).filter(
+              r => (r.calculation_method ?? 'GREEDY') === engine
             );
             return (
-              <div key={type} className={`bg-white rounded-lg border-2 p-5 ${r.is_selected ? 'border-green-500' : 'border-gray-200'}`}>
-                <h3 className="font-bold text-gray-800 mb-1">{RESULT_LABELS[type]}</h3>
-                <p className="text-xs text-gray-400 mb-4">{RESULT_DESC[type]}</p>
-                <div className="space-y-2 mb-4">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">期限遵守</span>
-                    <span className={r.is_deadline_met ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
-                      {r.is_deadline_met ? '✓ 遵守' : '✗ 超過'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">総人件費</span>
-                    <span className="font-semibold">¥{r.total_cost.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">うち残業費</span>
-                    <span className={r.total_overtime_cost > 0 ? 'text-orange-500' : 'text-gray-600'}>
-                      ¥{r.total_overtime_cost.toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">工程移動回数</span>
-                    <span>{r.total_process_moves} 回</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-500">検証パターン数</span>
-                    <span>{(r.patterns_evaluated ?? 0).toLocaleString()} 通り</span>
-                  </div>
+              <section key={engine}>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="inline-block px-2 py-0.5 rounded bg-gray-700 text-white text-xs font-medium">
+                    エンジン
+                  </span>
+                  <h2 className="font-bold text-gray-800">{ENGINE_LABELS[engine]}</h2>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => navigate(`/optimization/${r.result_id}?date=${date}`)} className="flex-1 border border-gray-300 text-gray-600 text-xs py-2 rounded hover:bg-gray-50">
-                    詳細を見る
-                  </button>
-                  <button
-                    onClick={() => selectMut.mutate(r.result_id)}
-                    disabled={selectMut.isPending}
-                    className={`flex-1 text-xs py-2 rounded ${r.is_selected ? 'bg-green-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                  >
-                    {r.is_selected ? '✓ 選択済み' : 'この案を選択'}
-                  </button>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {(['FASTEST', 'CHEAPEST', 'LEAST_MOVE'] as const).map(type => {
+                    const r = engineResults.find((x: any) => x.result_type === type);
+                    if (!r) return (
+                      <div key={type} className="bg-white rounded-lg border p-5 text-center text-gray-300 text-sm flex items-center justify-center">
+                        （{RESULT_LABELS[type]} の結果なし）
+                      </div>
+                    );
+                    const si = statusInfo(r);
+                    return (
+                      <div key={type} className={`bg-white rounded-lg border-2 p-5 ${r.is_selected ? 'border-green-500' : 'border-gray-200'}`}>
+                        <h3 className="font-bold text-gray-800 mb-1">{RESULT_LABELS[type]}</h3>
+                        <p className="text-xs text-gray-400 mb-4">{RESULT_DESC[type]}</p>
+                        <div className="space-y-2 mb-4">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">期限遵守</span>
+                            <span className={r.is_deadline_met ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
+                              {r.is_deadline_met ? '✓ 遵守' : '✗ 超過'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">総人件費</span>
+                            <span className="font-semibold">¥{r.total_cost.toLocaleString()}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">うち残業費</span>
+                            <span className={r.total_overtime_cost > 0 ? 'text-orange-500' : 'text-gray-600'}>
+                              ¥{r.total_overtime_cost.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">工程移動回数</span>
+                            <span>{r.total_process_moves} 回</span>
+                          </div>
+                        </div>
+
+                        {/* 計算ログ：このカードがどう計算されたかを分かりやすく表示 */}
+                        <div className="bg-gray-50 rounded p-3 mb-4 space-y-1.5">
+                          <div className="text-xs font-medium text-gray-500 mb-1">計算ログ</div>
+                          <div className="flex justify-between text-xs" title={si.hint}>
+                            <span className="text-gray-500">計算状態</span>
+                            <span className={`font-medium ${si.color}`}>{si.label}</span>
+                          </div>
+                          <div className="flex justify-between text-xs" title="最良解と理論限界(下界)の差。0%＝最適を証明済み。小さいほど最適に近い">
+                            <span className="text-gray-500">最適性ギャップ</span>
+                            <span className="text-gray-700">
+                              {r.solver_gap != null ? `${(r.solver_gap * 100).toFixed(1)}%` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-xs" title="ソルバーが求解に要した実時間">
+                            <span className="text-gray-500">計算時間</span>
+                            <span className="text-gray-700">
+                              {r.solve_seconds != null ? `${r.solve_seconds.toFixed(2)} 秒` : '—'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-xs" title="探索した配置パターン数の目安">
+                            <span className="text-gray-500">検証パターン数</span>
+                            <span className="text-gray-700">{(r.patterns_evaluated ?? 0).toLocaleString()} 通り</span>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button onClick={() => navigate(`/optimization/${r.result_id}?date=${date}`)} className="flex-1 border border-gray-300 text-gray-600 text-xs py-2 rounded hover:bg-gray-50">
+                            詳細を見る
+                          </button>
+                          <button
+                            onClick={() => selectMut.mutate(r.result_id)}
+                            disabled={selectMut.isPending}
+                            className={`flex-1 text-xs py-2 rounded ${r.is_selected ? 'bg-green-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          >
+                            {r.is_selected ? '✓ 選択済み' : 'この案を選択'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
+              </section>
             );
           })}
         </div>

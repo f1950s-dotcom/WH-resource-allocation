@@ -92,6 +92,21 @@ def init_db():
                 "ALTER TABLE optimization_results ADD COLUMN patterns_evaluated INTEGER NOT NULL DEFAULT 0"
             ))
             conn.commit()
+        # 計算エンジン・ソルバー実行記録の列（既存DBへ追加）
+        if "calculation_method" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN calculation_method TEXT NOT NULL DEFAULT 'GREEDY'"
+            ))
+            conn.commit()
+        if "solver_status" not in cols:
+            conn.execute(text("ALTER TABLE optimization_results ADD COLUMN solver_status TEXT"))
+            conn.commit()
+        if "solver_gap" not in cols:
+            conn.execute(text("ALTER TABLE optimization_results ADD COLUMN solver_gap NUMERIC(6,4)"))
+            conn.commit()
+        if "solve_seconds" not in cols:
+            conn.execute(text("ALTER TABLE optimization_results ADD COLUMN solve_seconds NUMERIC(8,2)"))
+            conn.commit()
 
         # Skill level 1 was 0.70; correct to 0.80 for existing databases
         row = conn.execute(text(

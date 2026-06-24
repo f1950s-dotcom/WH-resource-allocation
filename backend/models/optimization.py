@@ -16,6 +16,11 @@ class OptimizationResult(Base):
     calculated_at = Column(Text, nullable=False)
     is_selected = Column(Integer, nullable=False, default=0)
     patterns_evaluated = Column(Integer, nullable=False, default=0)
+    # 計算エンジン・ソルバーの実行記録（画面に「計算ログ」として表示）
+    calculation_method = Column(Text, nullable=False, default="GREEDY")  # GREEDY/ANNEALING/ORTOOLS
+    solver_status = Column(Text)        # OPTIMAL / FEASIBLE / HEURISTIC など
+    solver_gap = Column(Numeric(6, 4))  # 相対最適性ギャップ（0.0123=1.23%）。ヒューリスティックはNULL
+    solve_seconds = Column(Numeric(8, 2))  # 求解にかかった実時間（秒）
 
 
 class OptimizationAssignment(Base):

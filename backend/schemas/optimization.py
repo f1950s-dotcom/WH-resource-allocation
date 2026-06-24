@@ -31,6 +31,10 @@ class OptimizationResultResponse(BaseModel):
     calculated_at: str
     is_selected: bool
     patterns_evaluated: int = 0
+    calculation_method: str = "GREEDY"
+    solver_status: Optional[str] = None
+    solver_gap: Optional[float] = None
+    solve_seconds: Optional[float] = None
 
 
 class OptimizationResultDetail(BaseModel):

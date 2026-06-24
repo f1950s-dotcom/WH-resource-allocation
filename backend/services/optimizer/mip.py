@@ -278,7 +278,9 @@ def solve_mip(opt, objective_type: str,
         pywraplp.Solver.NOT_SOLVED: "NOT_SOLVED",
     }.get(status, str(status))
 
+    wall_sec = solver.wall_time() / 1000.0
     if status in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+        gap = None
         try:
             obj_val = solver.Objective().Value()
             best_bound = solver.Objective().BestBound()
@@ -287,15 +289,22 @@ def solve_mip(opt, objective_type: str,
                 "MIP[%s] status=%s gap=%.2f%% obj=%.1f bound=%.1f "
                 "int_vars=%d time_limit=%.1fs wall=%.2fs",
                 objective_type, status_name, gap * 100.0, obj_val, best_bound,
-                len(x), limit_sec, solver.wall_time() / 1000.0,
+                len(x), limit_sec, wall_sec,
             )
         except Exception:
             logger.info("MIP[%s] status=%s (gap計算不可)", objective_type, status_name)
+        # 画面の「計算ログ」に表示するため最適化インスタンスへ記録
+        opt.last_solve_meta = {
+            "status": status_name, "gap": gap, "seconds": wall_sec,
+        }
     else:
         logger.warning(
             "MIP[%s] status=%s 解なし→ヒューリスティックへフォールバック",
             objective_type, status_name,
         )
+        opt.last_solve_meta = {
+            "status": status_name, "gap": None, "seconds": wall_sec,
+        }
         return None
 
     # 探索ノード数を検証パターン数として加算

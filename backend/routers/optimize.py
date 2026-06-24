@@ -87,6 +87,10 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
             calculated_at=result.calculated_at,
             is_selected=bool(result.is_selected),
             patterns_evaluated=result.patterns_evaluated,
+            calculation_method=result.calculation_method,
+            solver_status=result.solver_status,
+            solver_gap=float(result.solver_gap) if result.solver_gap is not None else None,
+            solve_seconds=float(result.solve_seconds) if result.solve_seconds is not None else None,
         ),
         assignments=[
             OptimizationAssignmentResponse(

@@ -116,7 +116,11 @@ CREATE TABLE IF NOT EXISTS optimization_results (
     deadline_violations   TEXT,
     calculated_at         TEXT NOT NULL,
     is_selected           INTEGER NOT NULL DEFAULT 0,
-    patterns_evaluated    INTEGER NOT NULL DEFAULT 0
+    patterns_evaluated    INTEGER NOT NULL DEFAULT 0,
+    calculation_method    TEXT NOT NULL DEFAULT 'GREEDY',
+    solver_status         TEXT,
+    solver_gap            NUMERIC(6,4),
+    solve_seconds         NUMERIC(8,2)
 );
 
 -- 最適化結果明細

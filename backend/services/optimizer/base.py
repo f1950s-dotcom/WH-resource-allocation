@@ -67,6 +67,9 @@ class BaseOptimizer:
         self.slot_minutes = 15
         # Number of candidate placements examined by the heuristic
         self.patterns_evaluated = 0
+        # MIPソルバーの実行記録（solve_mip が設定）。画面の計算ログに使う。
+        # {"status": str, "gap": float|None, "seconds": float}
+        self.last_solve_meta = None
 
         # Load system conditions
         conds = {c.condition_key: c.condition_value for c in db.query(SystemCondition).all()}
@@ -345,12 +348,14 @@ class BaseOptimizer:
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         result_id = str(uuid.uuid4())
 
-        # Delete previous results of same type for this date, and their
-        # assignments (avoid orphaned assignment rows accumulating on re-run)
+        # Delete previous results of the same type AND same engine for this
+        # date, and their assignments. エンジン(method)別に残すことで、
+        # 貪欲/焼きなまし/OR-Tools の結果を画面で比較できるようにする。
         old_ids = [
             r.result_id for r in self.db.query(OptimizationResult).filter(
                 OptimizationResult.plan_date == self.plan_date,
                 OptimizationResult.result_type == self.RESULT_TYPE,
+                OptimizationResult.calculation_method == self.method,
             ).all()
         ]
         if old_ids:
@@ -360,7 +365,27 @@ class BaseOptimizer:
         self.db.query(OptimizationResult).filter(
             OptimizationResult.plan_date == self.plan_date,
             OptimizationResult.result_type == self.RESULT_TYPE,
+            OptimizationResult.calculation_method == self.method,
         ).delete()
+
+        # 計算ログ用のソルバー実行記録を決定する。
+        #  - GREEDY: MIP不使用。ヒューリスティックのみ。
+        #  - ANNEALING/ORTOOLS: MIPを使用。last_solve_meta に状態・ギャップ・時間。
+        #    MIPが解けずフォールバックした場合も meta に状態が入る（gap=None）。
+        meta = self.last_solve_meta
+        if self.method == "GREEDY":
+            solver_status = "HEURISTIC"
+            solver_gap = None
+            solve_seconds = None
+        elif meta is not None:
+            solver_status = meta.get("status")
+            solver_gap = meta.get("gap")
+            solve_seconds = meta.get("seconds")
+        else:
+            # MIP未導入などで一度も解けなかった
+            solver_status = "HEURISTIC"
+            solver_gap = None
+            solve_seconds = None
 
         result = OptimizationResult(
             result_id=result_id,
@@ -374,6 +399,10 @@ class BaseOptimizer:
             calculated_at=now,
             is_selected=0,
             patterns_evaluated=self.patterns_evaluated,
+            calculation_method=self.method,
+            solver_status=solver_status,
+            solver_gap=round(solver_gap, 4) if solver_gap is not None else None,
+            solve_seconds=round(solve_seconds, 2) if solve_seconds is not None else None,
         )
         self.db.add(result)
 
