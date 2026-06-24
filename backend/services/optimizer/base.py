@@ -125,20 +125,6 @@ class BaseOptimizer:
         }
         self.slot_hours = self.slot_minutes / 60.0
 
-        # 工程ごとの平均熟練度係数（その工程を担当可能な稼働従業員の平均）。
-        # 必要人数の見積り（demand）に使うことで、低スキル人員が多い工程では
-        # より多くの人員を割り当て、処理残が発生しにくくする。
-        self.avg_skill_rate: Dict[str, float] = {}
-        for pid in self.process_map:
-            rates = [
-                self.skill_rates.get(
-                    self.skills[e.employee_id][pid], 1.0
-                )
-                for e in self.active_employees
-                if pid in self.skills.get(e.employee_id, {})
-            ]
-            self.avg_skill_rate[pid] = (sum(rates) / len(rates)) if rates else 1.0
-
         # Load conversion rates: process_id -> rate (used to convert upstream
         # throughput into this process's work volume)
         self.conv_rate: Dict[str, float] = {
@@ -462,21 +448,21 @@ class BaseOptimizer:
             for pid in self.process_order:
                 backlog[pid] += incoming[pid].get(slot, 0.0)
 
-            # 2. Demand (person-slots) to clear each backlog this slot.
-            #    1人あたり処理能力を平均熟練度で補正し、低スキル人員が多い工程では
-            #    必要人数を多めに見積もる（処理残の発生を防ぐ）。
+            # 2. Demand (person-slots) to clear each backlog this slot
             demand: Dict[str, float] = {}
             for pid in self.process_order:
                 bp = self.base_prod.get(pid, 0.0)
-                cap_per_person = bp * self.slot_hours * self.avg_skill_rate.get(pid, 1.0)
+                cap_per_person = bp * self.slot_hours
                 if backlog[pid] > 1e-9 and cap_per_person > 0:
                     demand[pid] = backlog[pid] / cap_per_person
             quotas = self._demand_to_quotas(demand)
 
-            # 3. Assign workers and compute actual throughput, upstream first
+            # 3a. 第1パス：quotaで上流/下流の人員バランスを取りながら配置
+            slot_throughput: Dict[str, float] = {}
             for pid in self.process_order:
                 need = quotas.get(pid, 0)
                 if need <= 0:
+                    slot_throughput[pid] = 0.0
                     continue
                 sorted_emps = sorted(
                     self.active_employees,
@@ -488,7 +474,6 @@ class BaseOptimizer:
                     if assigned >= need:
                         break
                     emp_assignments = assignments[emp.employee_id]
-                    # Each examined candidate counts as one evaluated pattern
                     self.patterns_evaluated += 1
                     if self.can_assign(emp, pid, slot, emp_assignments):
                         is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
@@ -502,16 +487,50 @@ class BaseOptimizer:
                             slot_cost=cost,
                         )
                         assigned += 1
-                        # Accumulate skill-adjusted capacity for this employee
                         skill = self.skills.get(emp.employee_id, {}).get(pid, 1)
                         rate = self.skill_rates.get(skill, 1.0)
                         _assigned_capacity += self.base_prod.get(pid, 0.0) * rate * self.slot_hours
+                slot_throughput[pid] = min(backlog[pid], _assigned_capacity)
 
-                # Actual throughput: sum of each assigned employee's skill-adjusted capacity
-                throughput = min(backlog[pid], _assigned_capacity)
+            # 3b. 第2パス（モップアップ）：残務があるのに空き人員がいれば追加配置。
+            #    「熟練度が低い人員が配置されて実処理量がquota見積りを下回った」
+            #    場合でも処理残が出ないよう、空き人員を使い切る。
+            for pid in self.process_order:
+                remaining_backlog_before = backlog[pid] - slot_throughput[pid]
+                if remaining_backlog_before <= 1e-9:
+                    continue
+                sorted_emps = sorted(
+                    self.active_employees,
+                    key=lambda e: self._emp_sort_key(e, pid, slot, assignments),
+                )
+                extra_capacity = 0.0
+                for emp in sorted_emps:
+                    emp_assignments = assignments[emp.employee_id]
+                    self.patterns_evaluated += 1
+                    if self.can_assign(emp, pid, slot, emp_assignments):
+                        is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
+                        cost = self._calc_slot_cost(emp, slot, emp_assignments)
+                        emp_assignments[slot] = Assignment(
+                            employee_id=emp.employee_id,
+                            process_id=pid,
+                            time_slot_start=slot,
+                            slot_type="WORK",
+                            is_overtime=is_ot,
+                            slot_cost=cost,
+                        )
+                        skill = self.skills.get(emp.employee_id, {}).get(pid, 1)
+                        rate = self.skill_rates.get(skill, 1.0)
+                        extra_capacity += self.base_prod.get(pid, 0.0) * rate * self.slot_hours
+                        # 残務をカバーできた時点で追加配置を打ち切る
+                        if extra_capacity >= remaining_backlog_before:
+                            break
+                slot_throughput[pid] = min(backlog[pid], slot_throughput[pid] + extra_capacity)
+
+            # 4. backlогを確定し、下流へ伝播
+            for pid in self.process_order:
+                throughput = slot_throughput[pid]
                 backlog[pid] -= throughput
 
-                # 4. Propagate to downstream with 15-min lag
                 if throughput > 0 and next_slot:
                     for down_pid in self.downstream_of.get(pid, []):
                         if down_pid not in incoming:
