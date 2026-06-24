@@ -37,15 +37,28 @@ def init_db():
             conn.execute(text(stmt))
         conn.commit()
 
-        # シードデータ（工程構成・従業員）は「初回のみ」投入する。
-        # 一度投入したら system_conditions の seed_data_loaded フラグを立て、
-        # 以降は完全にスキップ。これにより利用者による変更・削除がすべて維持される
-        # （初期値として一度だけ植え、その後は変更後のデータを使い続けられる）。
-        already = conn.execute(text(
-            "SELECT condition_value FROM system_conditions WHERE condition_key='seed_data_loaded'"
+        # シードデータ（工程構成・従業員）はバージョン管理で投入する。
+        # system_conditions の seed_version に投入済みバージョンを記録し、
+        # SEED_VERSION（コード側）の方が新しい時だけ seed_data.sql を流す。
+        #   - 投入は INSERT OR IGNORE なので、利用者が編集・追加した既存行は壊さない
+        #   - シードを更新（例：スキル追加）したら SEED_VERSION を上げることで、
+        #     既存DBにも不足分（新スキル等）が次回起動時に補充される
+        #   - 利用者が消した行のうち、シードに含まれるものは再補充される点に注意
+        SEED_VERSION = 2
+        ver_row = conn.execute(text(
+            "SELECT condition_value FROM system_conditions WHERE condition_key='seed_version'"
         )).fetchone()
+        # 旧フラグ(seed_data_loaded)しか無い既存DBはバージョン1扱いにする
+        if ver_row is not None:
+            current_ver = int(ver_row[0])
+        else:
+            legacy = conn.execute(text(
+                "SELECT condition_value FROM system_conditions WHERE condition_key='seed_data_loaded'"
+            )).fetchone()
+            current_ver = 1 if legacy else 0
+
         seed_path = os.path.join(os.path.dirname(__file__), "migrations", "seed_data.sql")
-        if not already and os.path.exists(seed_path):
+        if current_ver < SEED_VERSION and os.path.exists(seed_path):
             with open(seed_path, "r", encoding="utf-8") as f:
                 seed_content = f.read()
             for raw in seed_content.split(";"):
@@ -57,7 +70,11 @@ def init_db():
                     conn.execute(text(stmt))
             conn.execute(text(
                 "INSERT OR REPLACE INTO system_conditions (condition_key, condition_value, description) "
-                "VALUES ('seed_data_loaded', '1', 'シードデータ投入済みフラグ（再投入防止）')"
+                "VALUES ('seed_version', :v, 'シードデータ投入済みバージョン')"
+            ), {"v": str(SEED_VERSION)})
+            conn.execute(text(
+                "INSERT OR REPLACE INTO system_conditions (condition_key, condition_value, description) "
+                "VALUES ('seed_data_loaded', '1', 'シードデータ投入済みフラグ（後方互換）')"
             ))
             conn.commit()
 
