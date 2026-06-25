@@ -346,8 +346,35 @@ class BaseOptimizer:
             "is_deadline_met": len(deadline_violations) == 0,
         }
 
+    def _strip_orphan_lunch_breaks(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """実際の作業に挟まれていない昼休憩を除去する。
+
+        昼休憩は「午前働いて昼に休み午後も働く」人にのみ意味がある。
+        次の3パターンの人には「昼」を残さない：
+          - 出社しない人（作業スロットが1つも無い）
+          - 昼休憩前に帰る人（昼より後に作業が無い）
+          - 昼休憩後に来る人（昼より前に作業が無い）
+        判定：その昼休憩スロットの前後どちらにもWORKがある場合のみ残す。
+        """
+        for emp_id, ea in assignments.items():
+            work_times = [
+                _parse_time(a.time_slot_start)
+                for a in ea.values() if a.slot_type == "WORK"
+            ]
+            for slot, a in list(ea.items()):
+                if a.slot_type != "LUNCH_BREAK":
+                    continue
+                t = _parse_time(slot)
+                has_before = any(wt < t for wt in work_times)
+                has_after = any(wt > t for wt in work_times)
+                if not (has_before and has_after):
+                    del ea[slot]
+
     def _save_result(self, assignments: Dict[str, Dict[str, Assignment]], score: dict):
         """Persist optimization result to DB."""
+        # 出社しない・午前で帰る・午後から来る人の「昼」表示を消す
+        self._strip_orphan_lunch_breaks(assignments)
+
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         result_id = str(uuid.uuid4())
 
