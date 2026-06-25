@@ -302,20 +302,31 @@ def solve_mip(opt, objective_type: str,
         w = float(e.hourly_wage) * slot_hours
         cost_expr = cost_expr + w * n_var[eid] + w * (rate_ot - 1.0) * ot_var[eid]
 
-    # 未処理量ペナルティ：コスト(~1e6)・makespan項(~1e7)を確実に上回る重みにし、
-    # 「まず処理しきる、その上で各目的を最適化する」という優先順位を保証する。
-    BIG_SHORT = 1.0e9
+    # 未処理量ペナルティ。
+    # 重み選択の根拠：
+    #   COST  目的は cost_expr（~数十万円オーダー）
+    #   MAKESPAN 目的は M（分単位、最大 ~1200）
+    #   MOVES 目的は moves_expr（最大 ~従業員数×工程数 ≈ 50）
+    # short_terms は「未処理物量」（単位：個）で 0〜数千 程度。
+    # ペナルティは「どの目的より重い」ことが必要だが、係数が大きすぎると
+    # CBC の数値精度が悪化して NOT_SOLVED になる。
+    # 1e5 × short: short が 1 個でも 100,000 点のペナルティ → cost(~100万)と
+    # 同スケール。MAKESPAN(~1200)より大きく、かつ 1e9 のような極端な差もない。
+    BIG_SHORT = 1.0e5
     short_penalty = BIG_SHORT * sum(short_terms) if short_terms else 0
 
     # ---- 目的関数 ----
     if objective_type == "COST":
         solver.Minimize(cost_expr + short_penalty)
     elif objective_type == "MAKESPAN":
-        M = solver.NumVar(0, max(end_min), "M")
+        # M は「最後に誰かが働くスロットの終了分（0〜1440）」。
+        # 係数を小さくして cost・short と同スケールに保つ：
+        #   M * 100 → 最大 144,000（cost と同オーダー）
+        #   cost は 二次目的として小さい重み（1.0）でそのまま加算
+        M = solver.NumVar(0, max(end_min) if end_min else 1440, "M")
         for (eid, p, s), var in x.items():
             solver.Add(M >= end_min[slot_idx[s]] * var)
-        # 完了時刻最小化、コストは微小重みで二次目的
-        solver.Minimize(M * 10000.0 + cost_expr + short_penalty)
+        solver.Minimize(M * 100.0 + cost_expr + short_penalty)
     elif objective_type == "MOVES":
         # 工程分散の代理指標：従業員が触れる工程数 - 就労有無
         y, w_emp = {}, {}
