@@ -127,32 +127,6 @@ def solve_mip(opt, objective_type: str,
     limit_sec = time_limit_sec if time_limit_sec is not None else _adaptive_time_limit(len(x))
     solver.SetTimeLimit(int(limit_sec * 1000))
 
-    # ---- ヒューリスティック解を初期ヒントとして設定（warm-start） ----
-    # CBCは整数実行可能解が1つも見つからないまま時間切れになることがある。
-    # 特にMAKESPANは目的関数が複雑で探索が遅い。ヒューリスティックの解を
-    # 初期ヒントとして渡すと最初から実行可能解を持った状態で分枝探索を始め、
-    # NOT_SOLVEDでフォールバックするケースを大幅に減らせる。
-    try:
-        hint_assignments: Dict[str, Dict[str, "Assignment"]] = {
-            e.employee_id: {} for e in employees
-        }
-        opt._assign_lunch_breaks(hint_assignments)
-        opt._run_flow(hint_assignments)
-        hint_vars, hint_vals = [], []
-        for (eid, p, s), var in x.items():
-            val = 1.0 if (
-                eid in hint_assignments
-                and s in hint_assignments[eid]
-                and hint_assignments[eid][s].slot_type == "WORK"
-                and hint_assignments[eid][s].process_id == p
-            ) else 0.0
-            hint_vars.append(var)
-            hint_vals.append(val)
-        if hint_vars:
-            solver.SetHint(hint_vars, hint_vals)
-    except Exception:
-        pass  # ヒント設定失敗は無視して通常探索へ
-
     # 1スロット1作業
     for e in employees:
         eid = e.employee_id
@@ -260,6 +234,11 @@ def solve_mip(opt, objective_type: str,
     #   これで MIP は常に実行可能解を持ち（最悪でも全スロット非稼働＝空解が成立）、
     #   かつヒューリスティックの選択肢を包含するため解の質は決して下回らない。
     short_terms = []
+    # 各時刻の滞留量（cum_arr - cum_proc）の総和。MAKESPAN目的で使う。
+    # この「在庫時間」を最小化すると、届いた物量を可能な限り早く処理する解に
+    # なり、実質的に全体の完了時刻（makespan）が最小化される。連続変数のみで
+    # 緩和が強く、big-M型のM変数よりCBCが圧倒的に速く解ける。
+    inventory_terms = []
     for p in processes:
         cum_proc = 0
         cum_arr = 0
@@ -268,6 +247,8 @@ def solve_mip(opt, objective_type: str,
             cum_arr = cum_arr + arrived_expr(p, t)
             # 届いた分しか処理できない（物理制約・ハードのまま）
             solver.Add(cum_proc <= cum_arr)
+            # 時刻tでの未処理滞留（>=0）。早く処理するほど小さくなる。
+            inventory_terms.append(cum_arr - cum_proc)
         short_p = solver.NumVar(0.0, INF, f"short_{p}")
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
         short_terms.append(short_p)
@@ -303,30 +284,27 @@ def solve_mip(opt, objective_type: str,
         cost_expr = cost_expr + w * n_var[eid] + w * (rate_ot - 1.0) * ot_var[eid]
 
     # 未処理量ペナルティ。
-    # 重み選択の根拠：
-    #   COST  目的は cost_expr（~数十万円オーダー）
-    #   MAKESPAN 目的は M（分単位、最大 ~1200）
-    #   MOVES 目的は moves_expr（最大 ~従業員数×工程数 ≈ 50）
-    # short_terms は「未処理物量」（単位：個）で 0〜数千 程度。
-    # ペナルティは「どの目的より重い」ことが必要だが、係数が大きすぎると
-    # CBC の数値精度が悪化して NOT_SOLVED になる。
-    # 1e5 × short: short が 1 個でも 100,000 点のペナルティ → cost(~100万)と
-    # 同スケール。MAKESPAN(~1200)より大きく、かつ 1e9 のような極端な差もない。
-    BIG_SHORT = 1.0e5
-    short_penalty = BIG_SHORT * sum(short_terms) if short_terms else 0
+    # 重み選択の根拠：未処理1単位でもどの目的より重くする必要があるが、
+    # 係数が大きすぎるとCBCの数値精度が悪化しNOT_SOLVEDになる。
+    # 目的別に「その目的の最大スケール」を上回る最小限の重みを使う。
+    sum_short = sum(short_terms) if short_terms else 0
 
     # ---- 目的関数 ----
     if objective_type == "COST":
-        solver.Minimize(cost_expr + short_penalty)
+        # cost_expr は数十万円オーダー。短期1単位=1e5で十分支配的。
+        solver.Minimize(cost_expr + 1.0e5 * sum_short)
     elif objective_type == "MAKESPAN":
-        # M は「最後に誰かが働くスロットの終了分（0〜1440）」。
-        # 係数を小さくして cost・short と同スケールに保つ：
-        #   M * 100 → 最大 144,000（cost と同オーダー）
-        #   cost は 二次目的として小さい重み（1.0）でそのまま加算
-        M = solver.NumVar(0, max(end_min) if end_min else 1440, "M")
-        for (eid, p, s), var in x.items():
-            solver.Add(M >= end_min[slot_idx[s]] * var)
-        solver.Minimize(M * 100.0 + cost_expr + short_penalty)
+        # 「最遅スロットを最小化」する連続変数M＋big-M制約は緩和が弱く、
+        # CBCが整数解を1つも見つけられずNOT_SOLVEDになっていた。また
+        # 「終了時刻で重み付けした総和」では人数が少ない遅い解の方が安くなり
+        # makespanの代理にならなかった。
+        # 正しくは各時刻の滞留量の総和（在庫時間）を最小化する。届いた物量を
+        # 早く処理するほど滞留が早く消えて総和が小さくなるため、完了時刻が
+        # 最小化される。連続変数のみで緩和が強く高速。
+        inventory_expr = sum(inventory_terms) if inventory_terms else 0
+        # 在庫時間を最優先、コストは同点をほぐす微小二次目的。
+        # 未処理ペナルティは在庫時間より十分大きく（在庫の上限を上回る）。
+        solver.Minimize(inventory_expr + cost_expr * 0.001 + 1.0e8 * sum_short)
     elif objective_type == "MOVES":
         # 工程分散の代理指標：従業員が触れる工程数 - 就労有無
         y, w_emp = {}, {}
@@ -344,9 +322,9 @@ def solve_mip(opt, objective_type: str,
                 solver.Add(worked >= yp - 0)  # worked is 1 if any process used
                 y[(eid, p)] = yp
         moves_expr = sum(y.values()) - sum(w_emp.values())
-        solver.Minimize(moves_expr * 10000.0 + cost_expr + short_penalty)
+        solver.Minimize(moves_expr * 10000.0 + cost_expr + 1.0e8 * sum_short)
     else:
-        solver.Minimize(cost_expr + short_penalty)
+        solver.Minimize(cost_expr + 1.0e5 * sum_short)
 
     status = solver.Solve(solver_params)
 
