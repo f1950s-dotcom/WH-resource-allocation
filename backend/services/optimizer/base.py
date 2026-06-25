@@ -128,6 +128,7 @@ class BaseOptimizer:
         # overtime_max_end_time まで配置可能スロットを延長する。
         # これにより残務がある限り残業可能者を配置できる。
         self.employee_available_slots: Dict[str, List[str]] = {}
+        self.employee_slot_index: Dict[str, Dict[str, int]] = {}  # O(1)スロット→インデックス逆引き
         for emp in self.active_employees:
             cond = self.work_conditions[emp.employee_id]
             end_time = cond.work_end_time
@@ -137,6 +138,7 @@ class BaseOptimizer:
                     end_time = self.overtime_max_end_time
             slots = _generate_slots(cond.work_start_time, end_time, self.slot_minutes)
             self.employee_available_slots[emp.employee_id] = slots
+            self.employee_slot_index[emp.employee_id] = {s: i for i, s in enumerate(slots)}
 
         # Load active processes and their base productivity
         self.process_map: Dict[str, Process] = {
@@ -266,27 +268,32 @@ class BaseOptimizer:
         # この人が直前に別工程にいて、かつその工程での連続就労がまだ最低時間に
         # 達していない場合は今回の工程への移動を拒否する。
         # 例外：元の工程のバックログが0（作業完了）なら移動を許可する。
+        # 【パフォーマンス注意】can_assign は1スロット配置ごとに呼ばれるため、
+        # sorted() は使わずに time_slot より前の最新WORKスロットを1回の線形スキャンで特定する。
         min_run = self.min_process_assignment_minutes // self.slot_minutes
-        if min_run > 1:
-            # 直前スロットを時刻順で特定し、連続する同工程スロット数を数える
-            sorted_slots = sorted(
-                (s for s, a in emp_assignments.items() if a.slot_type == "WORK"),
-                reverse=True,
-            )
-            if sorted_slots:
-                last_slot = sorted_slots[0]
-                last_a = emp_assignments[last_slot]
-                prev_pid = last_a.process_id
+        if min_run > 1 and emp_assignments:
+            # time_slot より前で最も遅いWORKスロットを特定（ソートなし）
+            last_slot = None
+            for s, a in emp_assignments.items():
+                if a.slot_type == "WORK" and s < time_slot:
+                    if last_slot is None or s > last_slot:
+                        last_slot = s
+            if last_slot is not None:
+                prev_pid = emp_assignments[last_slot].process_id
                 if prev_pid != process_id:
-                    # 直前工程と今回工程が異なる → 直前工程の連続スロット数を確認
+                    # 直前工程の連続スロット数を確認（後ろから前へ O(1) インデックス逆引き）
+                    slot_list = self.employee_available_slots.get(emp_id, [])
+                    slot_idx_map = self.employee_slot_index.get(emp_id, {})
                     run_len = 0
-                    for s in sorted_slots:
-                        if emp_assignments[s].process_id == prev_pid:
-                            run_len += 1
-                        else:
+                    s = last_slot
+                    while s is not None:
+                        a = emp_assignments.get(s)
+                        if a is None or a.slot_type != "WORK" or a.process_id != prev_pid:
                             break
+                        run_len += 1
+                        idx = slot_idx_map.get(s, -1)
+                        s = slot_list[idx - 1] if idx > 0 else None
                     if run_len < min_run:
-                        # 最低配置時間未達 → 元の工程のバックログが残っていれば拒否
                         if backlog is None or backlog.get(prev_pid, 0.0) > 1e-9:
                             return False
         return True
