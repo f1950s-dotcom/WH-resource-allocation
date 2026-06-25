@@ -264,9 +264,16 @@ def solve_mip(opt, objective_type: str,
     # なり、実質的に全体の完了時刻（makespan）が最小化される。連続変数のみで
     # 緩和が強く、big-M型のM変数よりCBCが圧倒的に速く解ける。
     inventory_terms = []
-    # pa[(p,t)] = 1 なら工程pは時刻tでまだ滞留(=作業)が残っている。
-    # 最低配置時間の「作業が完了したら適用しない」例外判定に使う。
-    pa: Dict = {}
+    # done[(p,t)] = 1 は「工程pが時刻tまでに当日の全作業を完了済み」を表す。
+    # 最低配置時間の「作業が完了したら例外で早く離れてよい」判定に使う。
+    #
+    # 【重要】以前は「その瞬間のバックログ(cum_arr-cum_proc)が0か」で例外を
+    # 判定していたが、これは誤り。最適化は物量を可能な限り早く処理するため、
+    # 日中でもバックログは頻繁に瞬間的に0になる。その都度「完了」とみなされて
+    # 例外が効いてしまい、最低連続配置がほぼ機能していなかった。
+    # 正しくは「当日の総到着量を処理し切ったか（cum_proc >= 総到着量）」で
+    # 判定する。cum_proc は単調増加なので done も一度立てば戻らない（単調）。
+    done: Dict = {}
     for p in processes:
         cum_proc = 0
         cum_arr = 0
@@ -278,18 +285,20 @@ def solve_mip(opt, objective_type: str,
             # 時刻tでの未処理滞留（>=0）。早く処理するほど小さくなる。
             inventory_terms.append(cum_arr - cum_proc)
             if min_run_slots > 1:
-                # backlog > 0 のとき pa=1 を強制（backlog <= M * pa）。
-                # backlog=0 のときは pa=0 を取れて最低配置の例外が効く。
-                pav = solver.BoolVar(f"pa_{p}_{t}")
-                solver.Add(cum_arr - cum_proc <= (tot_arr_ub.get(p, 0.0) + 1.0) * pav)
-                pa[(p, t)] = pav
+                # done=1 を取れるのは「累計処理が当日総到着量に達した」時のみ。
+                #   cum_proc >= tot_arr_ub * done
+                # done=0 のときは無制約。最適化は例外を使いたいので、本当に
+                # 完了した時刻以降でだけ done=1 にできる。
+                dv = solver.BoolVar(f"done_{p}_{t}")
+                solver.Add(cum_proc >= tot_arr_ub.get(p, 0.0) * dv)
+                done[(p, t)] = dv
         short_p = solver.NumVar(0.0, INF, f"short_{p}")
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
         short_terms.append(short_p)
 
     # ---- 1工程の最低連続配置時間（0/1スロット=無効） ----
     # ある従業員が工程pを「開始」したら、最低 min_run_slots 連続でpに就く。
-    # ただしその時刻に工程pの作業が完了している(pa=0)場合は例外として
+    # ただしその時刻に工程pの当日作業が完了済み(done=1)の場合は例外として
     # 早く離れてよい。休憩・勤務外で物理的に就けないスロットも強制しない。
     if min_run_slots > 1:
         for e in employees:
@@ -309,12 +318,12 @@ def solve_mip(opt, objective_type: str,
                         sk = all_slots[tk]
                         if (eid, p, sk) not in x:
                             continue  # 就けないスロットは強制しない
-                        pav = pa.get((p, tk))
-                        if pav is None:
+                        dv = done.get((p, tk))
+                        if dv is None:
                             continue
-                        # 開始かつ工程が稼働中(pa=1)なら継続を強制：
-                        #   x[e,p,tk] + (1 - pa[p,tk]) >= start_expr
-                        solver.Add(x[(eid, p, sk)] + (1 - pav) >= start_expr)
+                        # 開始かつ工程が未完了(done=0)なら継続を強制：
+                        #   x[e,p,tk] + done[p,tk] >= start_expr
+                        solver.Add(x[(eid, p, sk)] + dv >= start_expr)
 
     # ---- 締切：期限スロット以降は処理不可（締切を過ぎた処理は認めない） ----
     #   期限後に処理できない分は上の short_p（未処理量）に吸収され、目的関数で

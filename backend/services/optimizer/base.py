@@ -245,6 +245,7 @@ class BaseOptimizer:
         process_id: str,
         time_slot: str,
         emp_assignments: Dict[str, Assignment],
+        backlog: Optional[Dict[str, float]] = None,
     ) -> bool:
         emp_id = employee.employee_id
         # Check if slot is in available slots
@@ -261,6 +262,33 @@ class BaseOptimizer:
             cond = self.work_conditions.get(emp_id)
             if cond and not cond.overtime_available:
                 return False
+        # 1工程の最低連続配置時間チェック。
+        # この人が直前に別工程にいて、かつその工程での連続就労がまだ最低時間に
+        # 達していない場合は今回の工程への移動を拒否する。
+        # 例外：元の工程のバックログが0（作業完了）なら移動を許可する。
+        min_run = self.min_process_assignment_minutes // self.slot_minutes
+        if min_run > 1:
+            # 直前スロットを時刻順で特定し、連続する同工程スロット数を数える
+            sorted_slots = sorted(
+                (s for s, a in emp_assignments.items() if a.slot_type == "WORK"),
+                reverse=True,
+            )
+            if sorted_slots:
+                last_slot = sorted_slots[0]
+                last_a = emp_assignments[last_slot]
+                prev_pid = last_a.process_id
+                if prev_pid != process_id:
+                    # 直前工程と今回工程が異なる → 直前工程の連続スロット数を確認
+                    run_len = 0
+                    for s in sorted_slots:
+                        if emp_assignments[s].process_id == prev_pid:
+                            run_len += 1
+                        else:
+                            break
+                    if run_len < min_run:
+                        # 最低配置時間未達 → 元の工程のバックログが残っていれば拒否
+                        if backlog is None or backlog.get(prev_pid, 0.0) > 1e-9:
+                            return False
         return True
 
     def _is_overtime_slot(
@@ -578,7 +606,7 @@ class BaseOptimizer:
                         break
                     emp_assignments = assignments[emp.employee_id]
                     self.patterns_evaluated += 1
-                    if self.can_assign(emp, pid, slot, emp_assignments):
+                    if self.can_assign(emp, pid, slot, emp_assignments, backlog=backlog):
                         is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
                         cost = self._calc_slot_cost(emp, slot, emp_assignments)
                         emp_assignments[slot] = Assignment(
@@ -612,7 +640,7 @@ class BaseOptimizer:
                 for emp in sorted_emps:
                     emp_assignments = assignments[emp.employee_id]
                     self.patterns_evaluated += 1
-                    if self.can_assign(emp, pid, slot, emp_assignments):
+                    if self.can_assign(emp, pid, slot, emp_assignments, backlog=backlog):
                         is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
                         cost = self._calc_slot_cost(emp, slot, emp_assignments)
                         emp_assignments[slot] = Assignment(
@@ -661,7 +689,9 @@ class BaseOptimizer:
         """Employees who could legally take (process_id, slot) right now."""
         out = []
         for emp in self.active_employees:
-            if self.can_assign(emp, process_id, slot, assignments[emp.employee_id]):
+            # refinement 段階ではバックログが追跡できないため {} を渡し、
+            # 最低配置チェックの例外（バックログ0=完了扱い）を常に有効にする
+            if self.can_assign(emp, process_id, slot, assignments[emp.employee_id], backlog={}):
                 out.append(emp)
         return out
 
