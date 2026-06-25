@@ -127,6 +127,32 @@ def solve_mip(opt, objective_type: str,
     limit_sec = time_limit_sec if time_limit_sec is not None else _adaptive_time_limit(len(x))
     solver.SetTimeLimit(int(limit_sec * 1000))
 
+    # ---- ヒューリスティック解を初期ヒントとして設定（warm-start） ----
+    # CBCは整数実行可能解が1つも見つからないまま時間切れになることがある。
+    # 特にMAKESPANは目的関数が複雑で探索が遅い。ヒューリスティックの解を
+    # 初期ヒントとして渡すと最初から実行可能解を持った状態で分枝探索を始め、
+    # NOT_SOLVEDでフォールバックするケースを大幅に減らせる。
+    try:
+        hint_assignments: Dict[str, Dict[str, "Assignment"]] = {
+            e.employee_id: {} for e in employees
+        }
+        opt._assign_lunch_breaks(hint_assignments)
+        opt._run_flow(hint_assignments)
+        hint_vars, hint_vals = [], []
+        for (eid, p, s), var in x.items():
+            val = 1.0 if (
+                eid in hint_assignments
+                and s in hint_assignments[eid]
+                and hint_assignments[eid][s].slot_type == "WORK"
+                and hint_assignments[eid][s].process_id == p
+            ) else 0.0
+            hint_vars.append(var)
+            hint_vals.append(val)
+        if hint_vars:
+            solver.SetHint(hint_vars, hint_vals)
+    except Exception:
+        pass  # ヒント設定失敗は無視して通常探索へ
+
     # 1スロット1作業
     for e in employees:
         eid = e.employee_id
