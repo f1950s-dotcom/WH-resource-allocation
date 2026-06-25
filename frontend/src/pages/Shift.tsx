@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getShifts, exportShifts, getProcesses, getShiftFlow } from '../api/client';
 import {
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -274,6 +274,63 @@ export default function Shift() {
                     {!shifts ? 'シフトを選択すると処理実績累計が表示されます' : '物量展開を実行してください'}
                   </div>
                 )}
+
+                {/* 工程間滞留量（バッファ）グラフ：
+                    実線＝各スロットで工程間に滞留している数（処理残/backlog）
+                    ドット線＝工程マスタのバッファ上限(buffer_capacity)＝Max値 */}
+                {chartData.length > 0 && (() => {
+                  const bufferData = slots.map(slot => {
+                    const row: Record<string, any> = { slot };
+                    pids.forEach(pid => {
+                      const name = procMap[pid]?.process_name ?? pid;
+                      const point = simCumData[pid].find(d => d.slot === slot);
+                      row[`${name}_滞留`] = point?.処理残 ?? null;
+                    });
+                    return row;
+                  });
+                  // バッファ上限が1つでも設定されていれば閾値線を描く
+                  const hasBufferMax = pids.some(pid => (procMap[pid]?.buffer_capacity ?? 0) > 0);
+                  return (
+                    <div className="mt-6">
+                      <h4 className="font-semibold text-gray-700 mb-1 text-sm">工程間滞留量（バッファ）</h4>
+                      <div className="mb-2 text-xs text-gray-400 flex gap-4">
+                        <span>実線：実際に工程間に滞留している数（処理残）</span>
+                        {hasBufferMax && <span>ドット線：バッファ上限（Max値）</span>}
+                      </div>
+                      <ResponsiveContainer width="100%" height={260}>
+                        <ComposedChart data={bufferData} margin={{ top: 5, right: 20, left: 10, bottom: 60 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="slot" angle={-60} textAnchor="end" tick={{ fontSize: 10 }} interval={1} />
+                          <YAxis label={{ value: '滞留量', angle: -90, position: 'insideLeft', fontSize: 11 }} allowDecimals={false} />
+                          <Tooltip formatter={(value: any) => [`${Number(value).toLocaleString()}`]} />
+                          <Legend verticalAlign="top" wrapperStyle={{ fontSize: 11 }} />
+                          {pids.map((pid, i) => {
+                            const name = procMap[pid]?.process_name ?? pid;
+                            const color = CHART_COLORS[i % CHART_COLORS.length];
+                            const bufMax = procMap[pid]?.buffer_capacity ?? 0;
+                            const elems = [
+                              <Line key={`${pid}_滞留`} type="monotone" dataKey={`${name}_滞留`} stroke={color} strokeWidth={2} dot={false} name={`${name} 滞留`} connectNulls />,
+                            ];
+                            // バッファMax値をドット線（水平基準線）で表示
+                            if (bufMax > 0) {
+                              elems.push(
+                                <ReferenceLine
+                                  key={`${pid}_max`}
+                                  y={bufMax}
+                                  stroke={color}
+                                  strokeDasharray="2 4"
+                                  ifOverflow="extendDomain"
+                                  label={{ value: `${name} Max ${bufMax}`, position: 'right', fontSize: 9, fill: color }}
+                                />
+                              );
+                            }
+                            return elems;
+                          })}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  );
+                })()}
 
                 {/* 表形式：工程ごとの 発生・処理・残 をスロット単位で表示 */}
                 {pids.length > 0 && (
