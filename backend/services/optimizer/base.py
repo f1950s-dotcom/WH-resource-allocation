@@ -86,6 +86,11 @@ class BaseOptimizer:
         # 工程移動直後スロットの生産性ペナルティ（休憩なしで別工程へ移ったとき）
         self.transition_penalty_enabled = conds.get("process_transition_penalty_enabled", "1") == "1"
         self.transition_penalty_rate = float(conds.get("process_transition_penalty_rate", "0.30"))
+        # 最低勤務時間（分）：これ未満しか働けない人は配置しない（0=無効）
+        self.min_work_minutes = int(conds.get("min_work_minutes", "0"))
+        # 1工程の最低連続配置時間（分）：頻繁な工程移動を抑制（0=無効）。
+        # ただしその工程の当日作業が完了するタイミングでは適用しない。
+        self.min_process_assignment_minutes = int(conds.get("min_process_assignment_minutes", "0"))
 
         # Load skill productivity rates
         self.skill_rates = {
@@ -372,6 +377,11 @@ class BaseOptimizer:
 
     def _save_result(self, assignments: Dict[str, Dict[str, Assignment]], score: dict):
         """Persist optimization result to DB."""
+        # 注: 最低勤務時間・最低配置時間（ハード制約）はMIP定式化内で扱う。
+        # GREEDYヒューリスティックは「滞留がある時だけ人を割り当てる」フロー
+        # モデルのため、待機を含む最低勤務（在席させて支払う）の概念と相容れず、
+        # ここでは強制しない。これらの制約は ORTOOLS/ANNEALING エンジンで反映される。
+
         # 出社しない・午前で帰る・午後から来る人の「昼」表示を消す
         self._strip_orphan_lunch_breaks(assignments)
 

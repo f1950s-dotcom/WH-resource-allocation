@@ -94,6 +94,17 @@ def init_db():
             "VALUES ('process_transition_penalty_rate', '0.30', "
             "'工程移動直後スロットの生産性低下率（0.30=30%低下）')"
         ))
+        # 最低勤務時間・1工程の最低配置時間（既存DBへ追加）
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('min_work_minutes', '240', "
+            "'1人を配置する場合の最低勤務時間（分）。これ未満しか働けない人は配置しない')"
+        ))
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('min_process_assignment_minutes', '60', "
+            "'1工程への最低連続配置時間（分）。ただしその工程の当日作業が完了する場合は適用しない')"
+        ))
         conn.commit()
 
         # Lightweight migrations for existing databases

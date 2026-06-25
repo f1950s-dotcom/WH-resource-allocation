@@ -159,6 +159,20 @@ def solve_mip(opt, objective_type: str,
         if ups:
             solver.Add(sum(ups) <= 1)
 
+    # ---- 最低勤務時間：配置するなら一定時間以上働かせる（0=無効） ----
+    # 各従業員の総就労スロット n_e は 0 か min_slots 以上のいずれか。
+    # これにより「短時間だけ呼び出す」配置を排除する（出社させない＝除外）。
+    min_work_slots = getattr(opt, "min_work_minutes", 0) // opt.slot_minutes
+    if min_work_slots > 0:
+        for e in employees:
+            eid = e.employee_id
+            my = [x[k] for k in x if k[0] == eid]
+            if not my:
+                continue
+            worked_emp = solver.BoolVar(f"worked_{eid}")
+            solver.Add(sum(my) <= len(my) * worked_emp)
+            solver.Add(sum(my) >= min_work_slots * worked_emp)
+
     # ---- 工程移動ペナルティ変数 pen[e,p,t] ----
     # pen[e,p,t]=1 は「従業員eがスロットtで工程pに就労かつ直前スロットに
     # 別工程で就労していた」ことを表す（＝移動直後スロット）。
@@ -233,12 +247,26 @@ def solve_mip(opt, objective_type: str,
     #   揃えるため、未処理量 short_p を許容し、目的関数で非常に重く罰する。
     #   これで MIP は常に実行可能解を持ち（最悪でも全スロット非稼働＝空解が成立）、
     #   かつヒューリスティックの選択肢を包含するため解の質は決して下回らない。
+    # 最低配置時間で使う：各工程の総到着量の上界（バックログ用 big-M）。
+    # トポロジ順に「処理を無視した最大到着量」を積み上げる。
+    min_run_slots = getattr(opt, "min_process_assignment_minutes", 0) // opt.slot_minutes
+    tot_arr_ub: Dict[str, float] = {}
+    if min_run_slots > 1:
+        for p in processes:  # process_order はトポロジ順
+            base = sum(opt.root_volume.get(p, {}).values())
+            up = upstream_of.get(p)
+            up_contrib = tot_arr_ub.get(up, 0.0) * opt.conv_rate.get(p, 1.0) if up else 0.0
+            tot_arr_ub[p] = base + up_contrib
+
     short_terms = []
     # 各時刻の滞留量（cum_arr - cum_proc）の総和。MAKESPAN目的で使う。
     # この「在庫時間」を最小化すると、届いた物量を可能な限り早く処理する解に
     # なり、実質的に全体の完了時刻（makespan）が最小化される。連続変数のみで
     # 緩和が強く、big-M型のM変数よりCBCが圧倒的に速く解ける。
     inventory_terms = []
+    # pa[(p,t)] = 1 なら工程pは時刻tでまだ滞留(=作業)が残っている。
+    # 最低配置時間の「作業が完了したら適用しない」例外判定に使う。
+    pa: Dict = {}
     for p in processes:
         cum_proc = 0
         cum_arr = 0
@@ -249,9 +277,44 @@ def solve_mip(opt, objective_type: str,
             solver.Add(cum_proc <= cum_arr)
             # 時刻tでの未処理滞留（>=0）。早く処理するほど小さくなる。
             inventory_terms.append(cum_arr - cum_proc)
+            if min_run_slots > 1:
+                # backlog > 0 のとき pa=1 を強制（backlog <= M * pa）。
+                # backlog=0 のときは pa=0 を取れて最低配置の例外が効く。
+                pav = solver.BoolVar(f"pa_{p}_{t}")
+                solver.Add(cum_arr - cum_proc <= (tot_arr_ub.get(p, 0.0) + 1.0) * pav)
+                pa[(p, t)] = pav
         short_p = solver.NumVar(0.0, INF, f"short_{p}")
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
         short_terms.append(short_p)
+
+    # ---- 1工程の最低連続配置時間（0/1スロット=無効） ----
+    # ある従業員が工程pを「開始」したら、最低 min_run_slots 連続でpに就く。
+    # ただしその時刻に工程pの作業が完了している(pa=0)場合は例外として
+    # 早く離れてよい。休憩・勤務外で物理的に就けないスロットも強制しない。
+    if min_run_slots > 1:
+        for e in employees:
+            eid = e.employee_id
+            for p in processes:
+                for t in range(T):
+                    s = all_slots[t]
+                    if (eid, p, s) not in x:
+                        continue
+                    s_prev = all_slots[t - 1] if t > 0 else None
+                    prev_var = x[(eid, p, s_prev)] if (s_prev is not None and (eid, p, s_prev) in x) else 0
+                    start_expr = x[(eid, p, s)] - prev_var  # 開始時のみ1
+                    for k in range(1, min_run_slots):
+                        tk = t + k
+                        if tk >= T:
+                            break
+                        sk = all_slots[tk]
+                        if (eid, p, sk) not in x:
+                            continue  # 就けないスロットは強制しない
+                        pav = pa.get((p, tk))
+                        if pav is None:
+                            continue
+                        # 開始かつ工程が稼働中(pa=1)なら継続を強制：
+                        #   x[e,p,tk] + (1 - pa[p,tk]) >= start_expr
+                        solver.Add(x[(eid, p, sk)] + (1 - pav) >= start_expr)
 
     # ---- 締切：期限スロット以降は処理不可（締切を過ぎた処理は認めない） ----
     #   期限後に処理できない分は上の short_p（未処理量）に吸収され、目的関数で

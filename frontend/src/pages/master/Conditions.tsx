@@ -58,6 +58,8 @@ export default function Conditions() {
     legal_break_minutes: '法定休憩時間（分）',
     time_slot_minutes: '時間粒度（分）',
     overtime_max_end_time: '残業最大終了時刻',
+    min_work_minutes: '最低勤務時間（分・0=無効）',
+    min_process_assignment_minutes: '1工程の最低配置時間（分・0=無効）',
   };
   // 工程移動ペナルティ専用UIで扱うキー（汎用行からは除外）
   const PENALTY_KEYS = new Set([
