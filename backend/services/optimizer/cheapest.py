@@ -5,7 +5,7 @@
 from typing import Dict
 
 from .base import BaseOptimizer, Assignment
-from .mip import solve_mip
+from .mip import solve_mip_isolated
 
 
 class CheapestOptimizer(BaseOptimizer):
@@ -27,7 +27,7 @@ class CheapestOptimizer(BaseOptimizer):
         # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
         assignments = None
         if self.method != "GREEDY":
-            assignments = solve_mip(self, "COST")
+            assignments = solve_mip_isolated(self, "COST")
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}

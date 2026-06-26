@@ -5,7 +5,7 @@
 from typing import Dict
 
 from .base import BaseOptimizer, Assignment, _parse_time
-from .mip import solve_mip
+from .mip import solve_mip_isolated
 
 
 class FastestOptimizer(BaseOptimizer):
@@ -31,7 +31,7 @@ class FastestOptimizer(BaseOptimizer):
         # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
         assignments = None
         if self.method != "GREEDY":
-            assignments = solve_mip(self, "MAKESPAN")
+            assignments = solve_mip_isolated(self, "MAKESPAN")
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}

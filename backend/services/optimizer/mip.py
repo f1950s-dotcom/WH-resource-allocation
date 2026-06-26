@@ -284,13 +284,17 @@ def solve_mip(opt, objective_type: str,
             solver.Add(cum_proc <= cum_arr)
             # 時刻tでの未処理滞留（>=0）。早く処理するほど小さくなる。
             inventory_terms.append(cum_arr - cum_proc)
-            if min_run_slots > 1:
+            if min_run_slots > 1 and tot_arr_ub.get(p, 0.0) > 0:
                 # done=1 を取れるのは「累計処理が当日総到着量に達した」時のみ。
                 #   cum_proc >= tot_arr_ub * done
-                # done=0 のときは無制約。最適化は例外を使いたいので、本当に
-                # 完了した時刻以降でだけ done=1 にできる。
+                # 【数値安定化】tot_arr_ub は総物量（数千〜数万）になり得る。
+                # この巨大係数を big-M としてそのまま使うとCBCの行列レンジが
+                # 広がり、数値不安定化して SetTimeLimit すら無視して暴走する。
+                # 両辺を tot_arr_ub で割り、係数を [小, 1] の範囲に正規化する：
+                #   (1/tot_arr_ub) * cum_proc >= done
+                inv_ub = 1.0 / tot_arr_ub[p]
                 dv = solver.BoolVar(f"done_{p}_{t}")
-                solver.Add(cum_proc >= tot_arr_ub.get(p, 0.0) * dv)
+                solver.Add(inv_ub * cum_proc >= dv)
                 done[(p, t)] = dv
         short_p = solver.NumVar(0.0, INF, f"short_{p}")
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
@@ -467,3 +471,117 @@ def solve_mip(opt, objective_type: str,
                 slot_type="WORK", is_overtime=is_ot, slot_cost=cost,
             )
     return assignments
+
+
+# ---------------------------------------------------------------------------
+# プロセス隔離つきMIP求解
+# ---------------------------------------------------------------------------
+# CBCソルバーは min_process（連続配置）制約のような数値的に厳しいモデルで、
+#   (1) SetTimeLimit を無視して暴走する（10分以上）
+#   (2) 内部数値矛盾で CoinError を投げ、C++層で abort してプロセス即死する
+# という非決定的な異常を起こす。いずれも通常の try/except では止められない
+# （特に abort は捕捉不能）。そこで MIP の求解を「使い捨ての子プロセス」で実行し、
+# 親（＝バックエンド本体）から
+#   - ハードな実時間上限で子を強制終了（暴走対策）
+#   - 子が abort で死んでも親は生存（クラッシュ隔離）
+# できるようにする。子が時間内に解を返せなければ None を返し、呼び出し側の
+# ヒューリスティックにフォールバックする。
+
+def _mip_worker(module_name: str, class_name: str, plan_date: str,
+                method: str, objective_type: str, q) -> None:
+    """子プロセス側エントリ。DBから最適化器を再構築して solve_mip を実行する。"""
+    try:
+        import importlib
+        from database import SessionLocal, engine
+        # fork で親のDB接続プールを引き継ぐとSQLite接続が壊れるため、
+        # 子側で破棄して新しい接続を張り直す。
+        engine.dispose()
+        mod = importlib.import_module(module_name)
+        cls = getattr(mod, class_name)
+        db = SessionLocal()
+        try:
+            opt = cls(plan_date, db, method)
+            res = solve_mip(opt, objective_type)
+            q.put(("ok", res, opt.last_solve_meta, opt.patterns_evaluated))
+        finally:
+            db.close()
+    except Exception as e:  # Python層で捕捉できた例外はフォールバック扱いで返す
+        q.put(("err", None,
+               {"status": f"EXCEPTION:{type(e).__name__}", "gap": None, "seconds": 0.0},
+               0))
+
+
+def solve_mip_isolated(opt, objective_type: str,
+                       hard_timeout_sec: float = 90.0):
+    """solve_mip を子プロセスで実行し、暴走・クラッシュから親を守るラッパー。
+
+    子が hard_timeout_sec 以内に結果を返さなければ強制終了して None を返す。
+    子が abort（CoinError等）で死んだ場合も検知して None を返す。
+    多重プロセスが使えない環境では従来どおりインプロセス実行にフォールバックする。
+    戻り値・副作用（last_solve_meta, patterns_evaluated）は solve_mip と同等。
+    """
+    import multiprocessing as mp
+    import queue as _queue
+    import time as _time
+
+    try:
+        # OS依存：Linux/Macは fork（再インポート不要で高速・堅牢）、
+        # Windowsは fork 非対応のため spawn（子で全モジュール再インポート）。
+        # いずれも子はDB接続を張り直すため接続継承の問題は回避している。
+        methods = mp.get_all_start_methods()
+        ctx = mp.get_context("fork" if "fork" in methods else "spawn")
+        q = ctx.Queue()
+        p = ctx.Process(
+            target=_mip_worker,
+            args=(type(opt).__module__, type(opt).__name__,
+                  opt.plan_date, opt.method, objective_type, q),
+            daemon=True,
+        )
+        p.start()
+    except Exception as e:
+        # 子プロセスを起動できない環境（一部のWSGI/制限環境など）。
+        logger.warning("MIP[%s] 子プロセス起動不可(%s)→インプロセス実行", objective_type, e)
+        return solve_mip(opt, objective_type)
+
+    payload = None
+    timed_out = False
+    deadline = _time.time() + hard_timeout_sec
+    while True:
+        if _time.time() >= deadline:
+            timed_out = True  # 時間切れ（暴走）→こちらから強制終了する
+            break
+        try:
+            payload = q.get(timeout=1.0)
+            break
+        except _queue.Empty:
+            if not p.is_alive():
+                break  # 結果を入れずに自滅＝abort（クラッシュ）
+
+    # 後始末：まだ生きていれば強制終了
+    if p.is_alive():
+        p.terminate()
+    p.join(timeout=5)
+
+    if payload is None:
+        if timed_out:
+            logger.warning(
+                "MIP[%s] ハード時間上限%.0fs超過→子プロセス強制終了しフォールバック",
+                objective_type, hard_timeout_sec,
+            )
+            opt.last_solve_meta = {"status": "TIMEOUT_KILLED", "gap": None,
+                                   "seconds": hard_timeout_sec}
+        else:
+            logger.warning(
+                "MIP[%s] ソルバーが異常終了(exit=%s)→ヒューリスティックへフォールバック",
+                objective_type, p.exitcode,
+            )
+            opt.last_solve_meta = {"status": "SOLVER_CRASHED", "gap": None, "seconds": 0.0}
+        return None
+
+    tag, res, meta, patterns = payload
+    opt.last_solve_meta = meta
+    try:
+        opt.patterns_evaluated += int(patterns)
+    except Exception:
+        pass
+    return res if tag == "ok" else None

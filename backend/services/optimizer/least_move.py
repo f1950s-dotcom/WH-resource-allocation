@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 
 from .base import BaseOptimizer, Assignment, _parse_time
 from .cheapest import CheapestOptimizer
-from .mip import solve_mip
+from .mip import solve_mip_isolated
 
 
 class LeastMoveOptimizer(BaseOptimizer):
@@ -38,7 +38,7 @@ class LeastMoveOptimizer(BaseOptimizer):
         # GREEDYモードではMIPをスキップして高速ヒューリスティックのみ使用
         assignments = None
         if self.method != "GREEDY":
-            assignments = solve_mip(self, "MOVES")
+            assignments = solve_mip_isolated(self, "MOVES")
         if assignments is None:
             # フォールバック：従来のフローヒューリスティック＋帰宅後処理
             assignments = {emp.employee_id: {} for emp in self.active_employees}
