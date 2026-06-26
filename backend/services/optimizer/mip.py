@@ -25,8 +25,8 @@ def _adaptive_time_limit(num_int_vars: int) -> float:
     ギャップ基準（ratioGap）が担うので、これはあくまで安全弁（最悪上限）。
     5秒（小規模）〜60秒（大規模）の範囲にクランプする。
     """
-    secs = 5.0 + num_int_vars / 400.0
-    return max(5.0, min(60.0, secs))
+    secs = 5.0 + num_int_vars / 200.0
+    return max(5.0, min(180.0, secs))
 
 
 def solve_mip(opt, objective_type: str,
@@ -512,7 +512,7 @@ def _mip_worker(module_name: str, class_name: str, plan_date: str,
 
 
 def solve_mip_isolated(opt, objective_type: str,
-                       hard_timeout_sec: float = 90.0):
+                       hard_timeout_sec: float = 300.0):
     """solve_mip を子プロセスで実行し、暴走・クラッシュから親を守るラッパー。
 
     子が hard_timeout_sec 以内に結果を返さなければ強制終了して None を返す。
