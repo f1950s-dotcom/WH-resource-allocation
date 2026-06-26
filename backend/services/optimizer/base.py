@@ -531,12 +531,12 @@ class BaseOptimizer:
         moves_after = self.calc_score(assignments)["total_moves"]
         self.repair_info = {"moves_before": moves_before, "moves_after": moves_after}
 
-    def _flow_backlog_fixed(self, assignments: Dict[str, Dict[str, Assignment]]) -> float:
-        """与えられた配置（誰がどの工程か固定）での総未処理量を返す。
+    def _simulate_fixed(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """配置（誰がどの工程か固定）でフローを前進させ、(総未処理量, 完了時刻) を返す。
 
         _run_flow と違い再配置はせず、配置から各工程・各スロットの実効処理能力
-        （スキル率・工程移動ペナルティ込み）を積み上げてフローを前進させる。
-        連続化リペアが処理量を悪化させていないかの検証に使う。
+        （スキル率・工程移動ペナルティ込み）を積み上げる。完了時刻は「処理が
+        実際に行われた最後のスロットの終了時刻」（HH:MM、処理皆無なら None）。
         """
         slot_set: Set[str] = set()
         for ea in assignments.values():
@@ -565,6 +565,7 @@ class BaseOptimizer:
             for slot, vol in vmap.items():
                 incoming.setdefault(pid, {})[slot] = incoming.get(pid, {}).get(slot, 0.0) + vol
 
+        last_proc_slot = None
         for idx, slot in enumerate(all_slots):
             next_slot = all_slots[idx + 1] if idx + 1 < len(all_slots) else None
             for pid in self.process_order:
@@ -572,12 +573,25 @@ class BaseOptimizer:
             for pid in self.process_order:
                 thr = min(backlog[pid], cap.get((pid, slot), 0.0))
                 backlog[pid] -= thr
+                if thr > 1e-9:
+                    last_proc_slot = slot
                 if thr > 0 and next_slot:
                     for dn in self.downstream_of.get(pid, []):
                         if dn in incoming:
                             r = self.conv_rate.get(dn, 1.0)
                             incoming[dn][next_slot] = incoming[dn].get(next_slot, 0.0) + thr * r
-        return sum(backlog.values())
+
+        completion = (_format_time(_parse_time(last_proc_slot) + self.slot_minutes)
+                      if last_proc_slot is not None else None)
+        return sum(backlog.values()), completion
+
+    def _flow_backlog_fixed(self, assignments: Dict[str, Dict[str, Assignment]]) -> float:
+        """連続化リペアの検証用。総未処理量のみを返す（_simulate_fixed のラッパ）。"""
+        return self._simulate_fixed(assignments)[0]
+
+    def _completion_time(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """全処理が完了した時刻（HH:MM）。処理が無ければ None。"""
+        return self._simulate_fixed(assignments)[1]
 
     def _save_result(self, assignments: Dict[str, Dict[str, Assignment]], score: dict):
         """Persist optimization result to DB."""
@@ -650,6 +664,7 @@ class BaseOptimizer:
             process_moves_before_repair=(
                 self.repair_info.get("moves_before") if self.repair_info else None
             ),
+            completion_time=self._completion_time(assignments),
         )
         self.db.add(result)
 

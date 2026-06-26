@@ -134,6 +134,11 @@ def init_db():
                 "ALTER TABLE optimization_results ADD COLUMN process_moves_before_repair INTEGER"
             ))
             conn.commit()
+        if "completion_time" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN completion_time TEXT"
+            ))
+            conn.commit()
 
         # Skill level 1 was 0.70; correct to 0.80 for existing databases
         row = conn.execute(text(

@@ -23,6 +23,8 @@ class OptimizationResult(Base):
     solve_seconds = Column(Numeric(8, 2))  # 求解にかかった実時間（秒）
     # 連続化リペア前の工程切替回数（リペア後は total_process_moves）。NULL=リペア未実施
     process_moves_before_repair = Column(Integer)
+    # 全処理が完了した時刻（HH:MM）。処理皆無なら NULL
+    completion_time = Column(Text)
 
 
 class OptimizationAssignment(Base):

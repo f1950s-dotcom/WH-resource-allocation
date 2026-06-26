@@ -36,6 +36,7 @@ class OptimizationResultResponse(BaseModel):
     solver_gap: Optional[float] = None
     solve_seconds: Optional[float] = None
     process_moves_before_repair: Optional[int] = None
+    completion_time: Optional[str] = None
 
 
 class OptimizationResultDetail(BaseModel):

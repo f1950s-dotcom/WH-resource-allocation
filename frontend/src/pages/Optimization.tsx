@@ -187,6 +187,10 @@ export default function Optimization() {
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">
+                            <span className="text-gray-500">作業完了時間</span>
+                            <span className="font-medium">{r.completion_time ?? '—'}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">工程移動回数</span>
                             <span>
                               {r.total_process_moves} 回
