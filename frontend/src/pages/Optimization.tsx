@@ -156,8 +156,8 @@ export default function Optimization() {
                   </span>
                   <h2 className="font-bold text-gray-800">{ENGINE_LABELS[engine]}</h2>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                  {(['FASTEST', 'CHEAPEST', 'LEAST_MOVE'] as const).map(type => {
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {(['FASTEST', 'CHEAPEST'] as const).map(type => {
                     const r = engineResults.find((x: any) => x.result_type === type);
                     if (!r) return (
                       <div key={type} className="bg-white rounded-lg border p-5 text-center text-gray-300 text-sm flex items-center justify-center">

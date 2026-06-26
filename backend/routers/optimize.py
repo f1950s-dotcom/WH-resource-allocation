@@ -7,7 +7,6 @@ from models import OptimizationResult, OptimizationAssignment, Employee, Process
 from schemas import OptimizationResultResponse, OptimizationResultDetail, OptimizationAssignmentResponse
 from services.optimizer.fastest import FastestOptimizer
 from services.optimizer.cheapest import CheapestOptimizer
-from services.optimizer.least_move import LeastMoveOptimizer
 
 router = APIRouter()
 
@@ -28,9 +27,23 @@ def _run_optimization(date: str, method: str):
         # 組む一方、シフト画面は最新物量で再シミュレーションするため、
         # 「各工程で残が出る」不整合が発生する。
         expand_volume(date, db)
+        # 最小移動(LEAST_MOVE)案は廃止。過去に作られた結果が画面に残らないよう除去する。
+        stale_ids = [
+            r.result_id for r in db.query(OptimizationResult).filter(
+                OptimizationResult.plan_date == date,
+                OptimizationResult.result_type == "LEAST_MOVE",
+            ).all()
+        ]
+        if stale_ids:
+            db.query(OptimizationAssignment).filter(
+                OptimizationAssignment.result_id.in_(stale_ids)
+            ).delete(synchronize_session=False)
+            db.query(OptimizationResult).filter(
+                OptimizationResult.result_id.in_(stale_ids)
+            ).delete(synchronize_session=False)
+            db.commit()
         FastestOptimizer(date, db, method).run()
         CheapestOptimizer(date, db, method).run()
-        LeastMoveOptimizer(date, db, method).run()
     finally:
         db.close()
     _running.pop(date, None)
