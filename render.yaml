@@ -1,0 +1,18 @@
+# Render 用設定（無料Webサービス・Dockerデプロイ）。
+# 注意: 無料プランは永続ディスクが無く、再デプロイ/再起動でDBが初期化される。
+# 物量計画や最適化結果など利用者が入力したデータを保持したい場合は、
+# 有料の永続ディスク、または別途 Postgres(例: Neon無料枠) への接続が必要。
+services:
+  - type: web
+    name: wh-resource-allocation
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      # 無料プランはディスク非永続。コンテナ内パスにSQLiteを置く。
+      - key: DATABASE_URL
+        value: "sqlite:////app/backend/warehouse.db"

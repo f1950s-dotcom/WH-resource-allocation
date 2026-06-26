@@ -1,0 +1,6 @@
+**/__pycache__
+**/*.pyc
+backend/warehouse.db
+frontend/node_modules
+frontend/dist
+.git

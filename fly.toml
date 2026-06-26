@@ -1,0 +1,33 @@
+# Fly.io 設定。`fly launch --no-deploy` で app 名を埋めた後、
+# `fly volumes create wh_data --size 1` でボリュームを作成し `fly deploy`。
+app = "wh-resource-allocation"
+primary_region = "nrt"  # 東京
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DATABASE_URL = "sqlite:////data/warehouse.db"
+
+# SQLiteを永続化するボリューム（無料枠内）
+[[mounts]]
+  source = "wh_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0  # アイドル時は停止してコストゼロ
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1024mb"  # MIPソルバーを別プロセスでforkするため余裕を持たせる
+
+[[http_service.checks]]
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "20s"

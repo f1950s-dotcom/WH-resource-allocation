@@ -4,6 +4,15 @@ import os
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./warehouse.db")
 
+# sqlite:////data/warehouse.db のように永続ディスク上を指す場合、
+# 親ディレクトリが無いと接続に失敗するため事前に作成しておく。
+if DATABASE_URL.startswith("sqlite:///"):
+    _db_path = DATABASE_URL[len("sqlite:///"):]
+    if _db_path and not _db_path.startswith(":"):
+        _db_dir = os.path.dirname(_db_path)
+        if _db_dir:
+            os.makedirs(_db_dir, exist_ok=True)
+
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
