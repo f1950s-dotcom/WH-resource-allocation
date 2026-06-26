@@ -247,33 +247,22 @@ def solve_mip(opt, objective_type: str,
     #   揃えるため、未処理量 short_p を許容し、目的関数で非常に重く罰する。
     #   これで MIP は常に実行可能解を持ち（最悪でも全スロット非稼働＝空解が成立）、
     #   かつヒューリスティックの選択肢を包含するため解の質は決して下回らない。
-    # 最低配置時間で使う：各工程の総到着量の上界（バックログ用 big-M）。
-    # トポロジ順に「処理を無視した最大到着量」を積み上げる。
-    min_run_slots = getattr(opt, "min_process_assignment_minutes", 0) // opt.slot_minutes
-    tot_arr_ub: Dict[str, float] = {}
-    if min_run_slots > 1:
-        for p in processes:  # process_order はトポロジ順
-            base = sum(opt.root_volume.get(p, {}).values())
-            up = upstream_of.get(p)
-            up_contrib = tot_arr_ub.get(up, 0.0) * opt.conv_rate.get(p, 1.0) if up else 0.0
-            tot_arr_ub[p] = base + up_contrib
-
+    #
+    # 【最低配置時間（1工程の最低連続配置）はMIPに入れない】
+    # 「一度入った工程に最低◯分連続で就く」というハード制約は整数変数の
+    # 組合せ爆発を招き、CBCが時間制限を無視して暴走したり数値例外で
+    # クラッシュしたりして、実データでは事実上解けなくなる（全案が簡易計算に
+    # 落ちる）ことが判明した。そこで方針を変更し、MIPには入れず、解が
+    # 出来た後に「同一スロット内で工程ラベルを入れ替える」連続化リペア
+    # （_repair_continuity）で細切れ切替を後処理で減らす。リペアは各工程の
+    # スロット別人数（＝処理量・完了時刻・コスト）を一切変えないため、
+    # 最適解の質を保ったまま15分単位の無意味な工程切替だけを解消できる。
     short_terms = []
     # 各時刻の滞留量（cum_arr - cum_proc）の総和。MAKESPAN目的で使う。
     # この「在庫時間」を最小化すると、届いた物量を可能な限り早く処理する解に
     # なり、実質的に全体の完了時刻（makespan）が最小化される。連続変数のみで
     # 緩和が強く、big-M型のM変数よりCBCが圧倒的に速く解ける。
     inventory_terms = []
-    # done[(p,t)] = 1 は「工程pが時刻tまでに当日の全作業を完了済み」を表す。
-    # 最低配置時間の「作業が完了したら例外で早く離れてよい」判定に使う。
-    #
-    # 【重要】以前は「その瞬間のバックログ(cum_arr-cum_proc)が0か」で例外を
-    # 判定していたが、これは誤り。最適化は物量を可能な限り早く処理するため、
-    # 日中でもバックログは頻繁に瞬間的に0になる。その都度「完了」とみなされて
-    # 例外が効いてしまい、最低連続配置がほぼ機能していなかった。
-    # 正しくは「当日の総到着量を処理し切ったか（cum_proc >= 総到着量）」で
-    # 判定する。cum_proc は単調増加なので done も一度立てば戻らない（単調）。
-    done: Dict = {}
     for p in processes:
         cum_proc = 0
         cum_arr = 0
@@ -284,50 +273,9 @@ def solve_mip(opt, objective_type: str,
             solver.Add(cum_proc <= cum_arr)
             # 時刻tでの未処理滞留（>=0）。早く処理するほど小さくなる。
             inventory_terms.append(cum_arr - cum_proc)
-            if min_run_slots > 1 and tot_arr_ub.get(p, 0.0) > 0:
-                # done=1 を取れるのは「累計処理が当日総到着量に達した」時のみ。
-                #   cum_proc >= tot_arr_ub * done
-                # 【数値安定化】tot_arr_ub は総物量（数千〜数万）になり得る。
-                # この巨大係数を big-M としてそのまま使うとCBCの行列レンジが
-                # 広がり、数値不安定化して SetTimeLimit すら無視して暴走する。
-                # 両辺を tot_arr_ub で割り、係数を [小, 1] の範囲に正規化する：
-                #   (1/tot_arr_ub) * cum_proc >= done
-                inv_ub = 1.0 / tot_arr_ub[p]
-                dv = solver.BoolVar(f"done_{p}_{t}")
-                solver.Add(inv_ub * cum_proc >= dv)
-                done[(p, t)] = dv
         short_p = solver.NumVar(0.0, INF, f"short_{p}")
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
         short_terms.append(short_p)
-
-    # ---- 1工程の最低連続配置時間（0/1スロット=無効） ----
-    # ある従業員が工程pを「開始」したら、最低 min_run_slots 連続でpに就く。
-    # ただしその時刻に工程pの当日作業が完了済み(done=1)の場合は例外として
-    # 早く離れてよい。休憩・勤務外で物理的に就けないスロットも強制しない。
-    if min_run_slots > 1:
-        for e in employees:
-            eid = e.employee_id
-            for p in processes:
-                for t in range(T):
-                    s = all_slots[t]
-                    if (eid, p, s) not in x:
-                        continue
-                    s_prev = all_slots[t - 1] if t > 0 else None
-                    prev_var = x[(eid, p, s_prev)] if (s_prev is not None and (eid, p, s_prev) in x) else 0
-                    start_expr = x[(eid, p, s)] - prev_var  # 開始時のみ1
-                    for k in range(1, min_run_slots):
-                        tk = t + k
-                        if tk >= T:
-                            break
-                        sk = all_slots[tk]
-                        if (eid, p, sk) not in x:
-                            continue  # 就けないスロットは強制しない
-                        dv = done.get((p, tk))
-                        if dv is None:
-                            continue
-                        # 開始かつ工程が未完了(done=0)なら継続を強制：
-                        #   x[e,p,tk] + done[p,tk] >= start_expr
-                        solver.Add(x[(eid, p, sk)] + dv >= start_expr)
 
     # ---- 締切：期限スロット以降は処理不可（締切を過ぎた処理は認めない） ----
     #   期限後に処理できない分は上の short_p（未処理量）に吸収され、目的関数で

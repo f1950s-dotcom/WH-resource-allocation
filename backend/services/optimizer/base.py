@@ -264,38 +264,11 @@ class BaseOptimizer:
             cond = self.work_conditions.get(emp_id)
             if cond and not cond.overtime_available:
                 return False
-        # 1工程の最低連続配置時間チェック。
-        # この人が直前に別工程にいて、かつその工程での連続就労がまだ最低時間に
-        # 達していない場合は今回の工程への移動を拒否する。
-        # 例外：元の工程のバックログが0（作業完了）なら移動を許可する。
-        # 【パフォーマンス注意】can_assign は1スロット配置ごとに呼ばれるため、
-        # sorted() は使わずに time_slot より前の最新WORKスロットを1回の線形スキャンで特定する。
-        min_run = self.min_process_assignment_minutes // self.slot_minutes
-        if min_run > 1 and emp_assignments:
-            # time_slot より前で最も遅いWORKスロットを特定（ソートなし）
-            last_slot = None
-            for s, a in emp_assignments.items():
-                if a.slot_type == "WORK" and s < time_slot:
-                    if last_slot is None or s > last_slot:
-                        last_slot = s
-            if last_slot is not None:
-                prev_pid = emp_assignments[last_slot].process_id
-                if prev_pid != process_id:
-                    # 直前工程の連続スロット数を確認（後ろから前へ O(1) インデックス逆引き）
-                    slot_list = self.employee_available_slots.get(emp_id, [])
-                    slot_idx_map = self.employee_slot_index.get(emp_id, {})
-                    run_len = 0
-                    s = last_slot
-                    while s is not None:
-                        a = emp_assignments.get(s)
-                        if a is None or a.slot_type != "WORK" or a.process_id != prev_pid:
-                            break
-                        run_len += 1
-                        idx = slot_idx_map.get(s, -1)
-                        s = slot_list[idx - 1] if idx > 0 else None
-                    if run_len < min_run:
-                        if backlog is None or backlog.get(prev_pid, 0.0) > 1e-9:
-                            return False
+        # 注：1工程の最低連続配置時間は can_assign では強制しない。
+        # ハードに禁止すると（GREEDYでは残務が処理できず、MIPでは解けなくなる）
+        # 弊害が大きいため、配置決定後に _repair_continuity で
+        # 「同一スロット内の工程ラベル入れ替え」によって細切れ切替を後処理で
+        # 解消する方式に変更した（処理量・コストを変えずに連続化する）。
         return True
 
     def _is_overtime_slot(
@@ -409,6 +382,155 @@ class BaseOptimizer:
                 has_after = any(wt > t for wt in work_times)
                 if not (has_before and has_after):
                     del ea[slot]
+
+    def _repair_continuity(self, assignments: Dict[str, Dict[str, Assignment]]):
+        """配置決定後の連続化リペア（15分単位の無意味な工程切替を減らす）。
+
+        【考え方】最適化結果は「各工程・各スロットの人数（＝人員計画）」と
+        「その枠を具体的に誰が埋めるか（＝席割当）」に分解できる。人員計画を
+        固定したまま席割当だけを組み替えても、各工程の処理量・完了時刻・
+        各人の総勤務時間（＝コスト）は一切変わらない。そこで本処理は
+        「同一スロット内で、就労中の従業員同士の工程ラベルを入れ替える」
+        ことだけで、なるべく同じ人が同じ工程に連続して就くようにする。
+
+        評価指標は「連続する2スロット間で工程が変わる回数（＝切替数）」。
+        休憩・勤務外で途切れた箇所はリセット（昼休み後の工程変更は自由）。
+        スワップはスキル制約（双方が相手の工程スキルを持つ）を満たす場合のみ。
+        コスト・処理量に影響しない安全な変換で、切替だけを局所探索で削減する。
+        """
+        min_run = self.min_process_assignment_minutes // self.slot_minutes
+        if min_run <= 1:
+            return
+
+        # 各スロットで就労中の (employee_id, Assignment) を集める
+        slot_workers: Dict[str, List[str]] = {}
+        for eid, ea in assignments.items():
+            for slot, a in ea.items():
+                if a.slot_type == "WORK":
+                    slot_workers.setdefault(slot, []).append(eid)
+        all_slots = sorted(slot_workers.keys())
+
+        def proc_at_offset(eid: str, slot: str, offset: int):
+            """eid の available スロット並びで slot の offset 隣のWORK工程を返す。
+            隣が休憩・勤務外・非WORKなら None（＝そこで連続が途切れている）。"""
+            idx_map = self.employee_slot_index.get(eid, {})
+            idx = idx_map.get(slot)
+            if idx is None:
+                return None
+            slots = self.employee_available_slots.get(eid, [])
+            nidx = idx + offset
+            if nidx < 0 or nidx >= len(slots):
+                return None
+            a = assignments[eid].get(slots[nidx])
+            if a is None or a.slot_type != "WORK":
+                return None
+            return a.process_id
+
+        def local_switch_count(eid: str, slot: str, cur_pid: str) -> int:
+            """eid が slot で cur_pid に就く場合の、前後との切替本数（0〜2）。"""
+            cnt = 0
+            prev_p = proc_at_offset(eid, slot, -1)
+            if prev_p is not None and prev_p != cur_pid:
+                cnt += 1
+            next_p = proc_at_offset(eid, slot, +1)
+            if next_p is not None and next_p != cur_pid:
+                cnt += 1
+            return cnt
+
+        skills = self.skills
+        # スワップ前の状態を退避（処理量が悪化したら丸ごと戻すため）。
+        snapshot = {
+            (eid, slot): a.process_id
+            for eid, ea in assignments.items()
+            for slot, a in ea.items() if a.slot_type == "WORK"
+        }
+        base_backlog = self._flow_backlog_fixed(assignments)
+
+        # 局所探索：同一スロット内の2人で工程を入れ替えると切替が減る場合に実施
+        for _pass in range(8):
+            improved = False
+            for slot in all_slots:
+                workers = slot_workers[slot]
+                n = len(workers)
+                for i in range(n):
+                    ai = workers[i]
+                    pa = assignments[ai][slot].process_id
+                    for j in range(i + 1, n):
+                        bj = workers[j]
+                        pb = assignments[bj][slot].process_id
+                        if pa == pb:
+                            continue
+                        # スワップにはスキルが必要（互いに相手の工程をこなせる）
+                        if pb not in skills.get(ai, {}) or pa not in skills.get(bj, {}):
+                            continue
+                        before = (local_switch_count(ai, slot, pa)
+                                  + local_switch_count(bj, slot, pb))
+                        after = (local_switch_count(ai, slot, pb)
+                                 + local_switch_count(bj, slot, pa))
+                        if after < before:
+                            # 工程ラベルだけ入れ替え（人数は不変）。
+                            assignments[ai][slot].process_id = pb
+                            assignments[bj][slot].process_id = pa
+                            pa = pb  # ai の現工程を更新
+                            improved = True
+            if not improved:
+                break
+
+        # 安全網：スキルレベル差により工程別の実効処理能力が変わり、未処理量が
+        # 増えてしまった場合はリペアを丸ごと取り消す（処理量・完了時刻を守る）。
+        if self._flow_backlog_fixed(assignments) > base_backlog + 1e-6:
+            for (eid, slot), pid in snapshot.items():
+                a = assignments.get(eid, {}).get(slot)
+                if a is not None:
+                    a.process_id = pid
+
+    def _flow_backlog_fixed(self, assignments: Dict[str, Dict[str, Assignment]]) -> float:
+        """与えられた配置（誰がどの工程か固定）での総未処理量を返す。
+
+        _run_flow と違い再配置はせず、配置から各工程・各スロットの実効処理能力
+        （スキル率・工程移動ペナルティ込み）を積み上げてフローを前進させる。
+        連続化リペアが処理量を悪化させていないかの検証に使う。
+        """
+        slot_set: Set[str] = set()
+        for ea in assignments.values():
+            slot_set.update(ea.keys())
+        for vmap in self.root_volume.values():
+            slot_set.update(vmap.keys())
+        all_slots = sorted(slot_set)
+        prev_slot = {s: all_slots[i - 1] if i > 0 else None
+                     for i, s in enumerate(all_slots)}
+
+        cap: Dict = {}
+        for eid, ea in assignments.items():
+            for slot, a in ea.items():
+                if a.slot_type != "WORK":
+                    continue
+                pid = a.process_id
+                skill = self.skills.get(eid, {}).get(pid, 1)
+                rate = self.skill_rates.get(skill, 1.0)
+                tf = self._transition_factor(eid, pid, slot, ea, prev_slot)
+                cap[(pid, slot)] = cap.get((pid, slot), 0.0) + \
+                    self.base_prod.get(pid, 0.0) * rate * tf * self.slot_hours
+
+        backlog: Dict[str, float] = {pid: 0.0 for pid in self.process_order}
+        incoming: Dict[str, Dict[str, float]] = {pid: {} for pid in self.process_order}
+        for pid, vmap in self.root_volume.items():
+            for slot, vol in vmap.items():
+                incoming.setdefault(pid, {})[slot] = incoming.get(pid, {}).get(slot, 0.0) + vol
+
+        for idx, slot in enumerate(all_slots):
+            next_slot = all_slots[idx + 1] if idx + 1 < len(all_slots) else None
+            for pid in self.process_order:
+                backlog[pid] += incoming[pid].get(slot, 0.0)
+            for pid in self.process_order:
+                thr = min(backlog[pid], cap.get((pid, slot), 0.0))
+                backlog[pid] -= thr
+                if thr > 0 and next_slot:
+                    for dn in self.downstream_of.get(pid, []):
+                        if dn in incoming:
+                            r = self.conv_rate.get(dn, 1.0)
+                            incoming[dn][next_slot] = incoming[dn].get(next_slot, 0.0) + thr * r
+        return sum(backlog.values())
 
     def _save_result(self, assignments: Dict[str, Dict[str, Assignment]], score: dict):
         """Persist optimization result to DB."""

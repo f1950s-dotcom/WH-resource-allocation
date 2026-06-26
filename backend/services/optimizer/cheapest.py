@@ -39,6 +39,8 @@ class CheapestOptimizer(BaseOptimizer):
                 self._refine(assignments)
             self._dismiss_expensive_workers(assignments)
 
+        # 連続化リペア：処理量・完了時刻・コストを変えずに15分単位の工程切替を削減
+        self._repair_continuity(assignments)
         score = self.calc_score(assignments)
         self._save_result(assignments, score)
 
