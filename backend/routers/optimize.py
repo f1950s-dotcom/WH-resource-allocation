@@ -91,6 +91,7 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
             solver_status=result.solver_status,
             solver_gap=float(result.solver_gap) if result.solver_gap is not None else None,
             solve_seconds=float(result.solve_seconds) if result.solve_seconds is not None else None,
+            process_moves_before_repair=result.process_moves_before_repair,
         ),
         assignments=[
             OptimizationAssignmentResponse(

@@ -70,6 +70,8 @@ class BaseOptimizer:
         # MIPソルバーの実行記録（solve_mip が設定）。画面の計算ログに使う。
         # {"status": str, "gap": float|None, "seconds": float}
         self.last_solve_meta = None
+        # 連続化リペアの効果記録 {"moves_before": int, "moves_after": int}
+        self.repair_info = None
 
         # Load system conditions
         conds = {c.condition_key: c.condition_value for c in db.query(SystemCondition).all()}
@@ -438,15 +440,16 @@ class BaseOptimizer:
             return cnt
 
         skills = self.skills
-        # スワップ前の状態を退避（処理量が悪化したら丸ごと戻すため）。
+        moves_before = self.calc_score(assignments)["total_moves"]
+
+        # ── フェーズ1：同一スロット内ラベル入れ替え（人数・処理量・コスト不変） ──
+        # 同じスロットで就労中の2人の工程を入れ替えても各工程の人数は変わらない。
         snapshot = {
             (eid, slot): a.process_id
             for eid, ea in assignments.items()
             for slot, a in ea.items() if a.slot_type == "WORK"
         }
         base_backlog = self._flow_backlog_fixed(assignments)
-
-        # 局所探索：同一スロット内の2人で工程を入れ替えると切替が減る場合に実施
         for _pass in range(8):
             improved = False
             for slot in all_slots:
@@ -460,7 +463,6 @@ class BaseOptimizer:
                         pb = assignments[bj][slot].process_id
                         if pa == pb:
                             continue
-                        # スワップにはスキルが必要（互いに相手の工程をこなせる）
                         if pb not in skills.get(ai, {}) or pa not in skills.get(bj, {}):
                             continue
                         before = (local_switch_count(ai, slot, pa)
@@ -468,21 +470,66 @@ class BaseOptimizer:
                         after = (local_switch_count(ai, slot, pb)
                                  + local_switch_count(bj, slot, pa))
                         if after < before:
-                            # 工程ラベルだけ入れ替え（人数は不変）。
                             assignments[ai][slot].process_id = pb
                             assignments[bj][slot].process_id = pa
-                            pa = pb  # ai の現工程を更新
+                            pa = pb
                             improved = True
             if not improved:
                 break
-
-        # 安全網：スキルレベル差により工程別の実効処理能力が変わり、未処理量が
-        # 増えてしまった場合はリペアを丸ごと取り消す（処理量・完了時刻を守る）。
+        # スキルレベル差で処理量が悪化したらフェーズ1を丸ごと取り消す
         if self._flow_backlog_fixed(assignments) > base_backlog + 1e-6:
             for (eid, slot), pid in snapshot.items():
                 a = assignments.get(eid, {}).get(slot)
                 if a is not None:
                     a.process_id = pid
+
+        # ── フェーズ2：人数を変える付け替え（下流バッファが吸収できる範囲で） ──
+        # 1人の工程を直前スロットと同じ工程へ付け替えて細切れ切替を解消する。
+        # これは工程別人数を変える（＝処理量が変わり得る）が、
+        #   ・未処理量が増えない（下流に余力/バッファがある）
+        #   ・締切違反が増えない
+        # を満たす場合だけ採用する。本人の勤務スロットは変えないのでコストは不変。
+        def metrics():
+            sc = self.calc_score(assignments)
+            bl = self._flow_backlog_fixed(assignments)
+            dv = sum(sc["deadline_violations"].values()) if sc["deadline_violations"] else 0.0
+            return sc["total_moves"], bl, dv
+
+        base_m, base_bl, base_dv = metrics()
+        budget = 1500  # 試行評価の上限（暴走防止）
+        for _pass in range(6):
+            improved = False
+            for eid, ea in assignments.items():
+                idx_map = self.employee_slot_index.get(eid, {})
+                slots = self.employee_available_slots.get(eid, [])
+                work_idx = sorted(idx_map[s] for s, a in ea.items()
+                                  if a.slot_type == "WORK" and s in idx_map)
+                for wi in work_idx:
+                    if wi - 1 < 0 or budget <= 0:
+                        continue
+                    s = slots[wi]
+                    sp = slots[wi - 1]
+                    a = ea.get(s)
+                    ap = ea.get(sp)
+                    if (a is None or a.slot_type != "WORK"
+                            or ap is None or ap.slot_type != "WORK"):
+                        continue  # 直前が休憩/勤務外なら連続でない（昼跨ぎ等はリセット）
+                    cur, prev = a.process_id, ap.process_id
+                    if cur == prev or prev not in skills.get(eid, {}):
+                        continue
+                    budget -= 1
+                    a.process_id = prev  # 直前工程へ付け替えて連続化を試す
+                    m, bl, dv = metrics()
+                    if m < base_m and bl <= base_bl + 1e-6 and dv <= base_dv + 1e-6:
+                        base_m, base_bl, base_dv = m, bl, dv
+                        improved = True
+                    else:
+                        a.process_id = cur  # 不採用：戻す
+            if not improved:
+                break
+
+        moves_after = self.calc_score(assignments)["total_moves"]
+        self.repair_info = {"moves_before": moves_before, "moves_after": moves_after}
 
     def _flow_backlog_fixed(self, assignments: Dict[str, Dict[str, Assignment]]) -> float:
         """与えられた配置（誰がどの工程か固定）での総未処理量を返す。
@@ -600,6 +647,9 @@ class BaseOptimizer:
             solver_status=solver_status,
             solver_gap=round(solver_gap, 4) if solver_gap is not None else None,
             solve_seconds=round(solve_seconds, 2) if solve_seconds is not None else None,
+            process_moves_before_repair=(
+                self.repair_info.get("moves_before") if self.repair_info else None
+            ),
         )
         self.db.add(result)
 

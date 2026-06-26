@@ -188,7 +188,15 @@ export default function Optimization() {
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-500">工程移動回数</span>
-                            <span>{r.total_process_moves} 回</span>
+                            <span>
+                              {r.total_process_moves} 回
+                              {r.process_moves_before_repair != null
+                                && r.process_moves_before_repair > r.total_process_moves && (
+                                <span className="text-xs text-green-600 ml-1">
+                                  （連続化前 {r.process_moves_before_repair} 回）
+                                </span>
+                              )}
+                            </span>
                           </div>
                         </div>
 
@@ -215,6 +223,17 @@ export default function Optimization() {
                             <span className="text-gray-500">検証パターン数</span>
                             <span className="text-gray-700">{(r.patterns_evaluated ?? 0).toLocaleString()} 通り</span>
                           </div>
+                          {r.process_moves_before_repair != null && (
+                            <div className="flex justify-between text-xs" title="細切れの工程切替を、処理量・コストを変えずに減らす後処理">
+                              <span className="text-gray-500">連続化リペア</span>
+                              <span className="text-gray-700">
+                                工程切替 {r.process_moves_before_repair} → {r.total_process_moves} 回
+                                {r.process_moves_before_repair > r.total_process_moves
+                                  ? `（${r.process_moves_before_repair - r.total_process_moves} 回削減）`
+                                  : '（削減なし）'}
+                              </span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex gap-2">

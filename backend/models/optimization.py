@@ -21,6 +21,8 @@ class OptimizationResult(Base):
     solver_status = Column(Text)        # OPTIMAL / FEASIBLE / HEURISTIC など
     solver_gap = Column(Numeric(6, 4))  # 相対最適性ギャップ（0.0123=1.23%）。ヒューリスティックはNULL
     solve_seconds = Column(Numeric(8, 2))  # 求解にかかった実時間（秒）
+    # 連続化リペア前の工程切替回数（リペア後は total_process_moves）。NULL=リペア未実施
+    process_moves_before_repair = Column(Integer)
 
 
 class OptimizationAssignment(Base):
