@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>倉庫人員配置最適化システム ユーザーガイド</title>
+<style>
+  :root{
+    --blue:#2563eb; --blue-d:#1d4ed8; --green:#16a34a; --gray:#6b7280;
+    --line:#e5e7eb; --bg:#f9fafb; --ink:#1f2937;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;
+       color:var(--ink);line-height:1.8;background:#fff;}
+  .wrap{display:flex;max-width:1180px;margin:0 auto;}
+  /* sidebar */
+  nav.toc{position:sticky;top:0;align-self:flex-start;width:240px;height:100vh;overflow:auto;
+          padding:24px 18px;border-right:1px solid var(--line);background:var(--bg);font-size:13px;}
+  nav.toc h2{font-size:13px;color:var(--gray);margin:18px 0 8px;letter-spacing:.04em;}
+  nav.toc a{display:block;color:var(--ink);text-decoration:none;padding:5px 8px;border-radius:6px;}
+  nav.toc a:hover{background:#eef2ff;color:var(--blue);}
+  nav.toc .t{font-weight:700;font-size:15px;color:var(--blue);margin-bottom:6px;}
+  /* main */
+  main{flex:1;padding:40px 48px;min-width:0;}
+  h1{font-size:28px;border-bottom:3px solid var(--blue);padding-bottom:14px;margin-top:0;}
+  h2.sec{font-size:22px;margin-top:56px;padding-left:12px;border-left:6px solid var(--blue);}
+  h3{font-size:17px;margin-top:32px;color:var(--blue-d);}
+  p{margin:10px 0;}
+  .lead{font-size:15px;color:#374151;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px 20px;}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top;}
+  th{background:var(--bg);color:#374151;font-weight:600;}
+  tr:nth-child(even) td{background:#fcfcfd;}
+  code{background:#f3f4f6;padding:1px 6px;border-radius:4px;font-size:13px;}
+  .tag{display:inline-block;background:#1f2937;color:#fff;border-radius:5px;padding:2px 8px;font-size:12px;font-weight:600;}
+  .note{background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 16px;font-size:14px;margin:14px 0;}
+  .ok{color:var(--green);font-weight:700;}
+  ul{margin:10px 0;padding-left:22px;}
+  li{margin:5px 0;}
+  /* flow diagram */
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:20px 0;}
+  .fbox{background:#fff;border:2px solid var(--blue);border-radius:10px;padding:10px 14px;font-size:13px;text-align:center;font-weight:600;color:var(--blue-d);min-width:120px;}
+  .fbox small{display:block;color:var(--gray);font-weight:400;font-size:11px;margin-top:2px;}
+  .farr{color:var(--blue);font-size:22px;font-weight:700;}
+  .fbox.alt{border-color:var(--green);color:var(--green);}
+  /* mock screen */
+  .screen{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:18px 0;box-shadow:0 4px 14px rgba(0,0,0,.06);}
+  .screen .bar{background:#1e293b;color:#cbd5e1;padding:7px 14px;font-size:12px;}
+  .screen .bar b{color:#fff;}
+  .screen .body{padding:18px;background:#fff;}
+  .cardrow{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .mcard{border:1px solid var(--line);border-radius:10px;padding:16px;}
+  .mcard h4{margin:0 0 4px;font-size:16px;}
+  .mcard .sub{color:var(--gray);font-size:12px;margin-bottom:12px;}
+  .kv{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;}
+  .kv .k{color:var(--gray);}
+  .log{background:var(--bg);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:12px;}
+  .log .kv{padding:3px 0;}
+  .blue{color:var(--blue);font-weight:700;}
+  .grn{color:var(--green);}
+  .btnrow{display:flex;gap:8px;margin-top:14px;}
+  .btn{flex:1;text-align:center;border:1px solid var(--line);border-radius:7px;padding:8px;font-size:13px;}
+  .btn.p{background:var(--blue);color:#fff;border-color:var(--blue);}
+  /* bar chart mock */
+  .gantt{font-size:12px;}
+  .grow{display:flex;align-items:center;margin:3px 0;}
+  .gname{width:70px;color:#374151;}
+  .gtrack{flex:1;display:flex;height:18px;border-radius:3px;overflow:hidden;border:1px solid var(--line);}
+  .seg{height:100%;}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-top:10px;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block;}
+  /* line chart mock (svg) */
+  svg{max-width:100%;height:auto;}
+  .cap{font-size:12px;color:var(--gray);text-align:center;margin-top:6px;}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+  @media(max-width:900px){.wrap{display:block;}nav.toc{position:static;width:auto;height:auto;border-right:none;border-bottom:1px solid var(--line);}main{padding:24px;}.cardrow,.two{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <div class="t">📦 ユーザーガイド</div>
+  <a href="#intro">1. 目的と概要</a>
+  <a href="#mech">2. 全体メカニズム</a>
+  <a href="#master">3. 各種マスタ</a>
+  <a href="#methods">4. 計算手法の種類</a>
+  <a href="#read-opt">5. 最適化計算の見方</a>
+  <a href="#read-graph">6. 稼働グラフの見方</a>
+</nav>
+
+<main>
+<h1>倉庫人員配置最適化システム ユーザーガイド</h1>
+<p class="lead">
+本システムは、<b>倉庫の1日の作業（入荷・棚入れ・ピッキング・仕分け・梱包など）</b>に対して、
+<b>「誰を・いつ・どの工程に配置すれば最適か」</b>をコンピュータが自動で計算し、
+日々のシフト（人員配置表）を作成するツールです。
+</p>
+
+<!-- ============ 1 ============ -->
+<h2 class="sec" id="intro">1. アプリの目的とできること</h2>
+
+<h3>このアプリが解決すること</h3>
+<p>
+倉庫では「その日の物量（処理すべき荷物の量）」が日によって変動します。物量に対して
+人を多く配置しすぎれば人件費が無駄になり、少なすぎれば作業が締切に間に合いません。
+さらに「どの人がどの工程が得意か（習熟度）」「誰が何時から何時まで働けるか」も人ごとに違います。
+これらを人手で最適に組むのは非常に困難です。本システムはこの配置決定を自動化します。
+</p>
+
+<h3>主にできること</h3>
+<table>
+  <tr><th>機能</th><th>内容</th></tr>
+  <tr><td>マスタ管理</td><td>従業員・工程・スキル・物量変換ルール・各種条件を登録・編集できます。</td></tr>
+  <tr><td>物量登録</td><td>対象日の物量（時間帯ごとの処理量）を登録します。</td></tr>
+  <tr><td>配置の自動最適化</td><td>「最速完了」「最低コスト」の2つの方針で、最適な人員配置を自動計算します。</td></tr>
+  <tr><td>結果の比較</td><td>計算エンジン別・方針別に結果（人件費・完了時間・工程移動回数など）を並べて比較できます。</td></tr>
+  <tr><td>シフト表・稼働グラフ</td><td>確定した配置をシフト表で確認し、稼働グラフで処理の流れ・滞留を可視化します。</td></tr>
+</table>
+
+<!-- ============ 2 ============ -->
+<h2 class="sec" id="mech">2. アプリ全体のメカニズム</h2>
+<p>システムは「マスタ整備 → 物量登録 → 最適化計算 → 結果確認」という流れで動きます。</p>
+
+<div class="flow">
+  <div class="fbox">① マスタ整備<small>従業員・工程・条件</small></div>
+  <div class="farr">→</div>
+  <div class="fbox">② 物量登録<small>対象日の物量</small></div>
+  <div class="farr">→</div>
+  <div class="fbox">③ 物量展開<small>工程別・時間帯別へ変換</small></div>
+  <div class="farr">→</div>
+  <div class="fbox alt">④ 最適化計算<small>配置を自動決定</small></div>
+  <div class="farr">→</div>
+  <div class="fbox alt">⑤ 結果確認<small>シフト表・稼働グラフ</small></div>
+</div>
+
+<h3>処理の流れ（工程チェーン）の考え方</h3>
+<p>
+倉庫の作業は<b>上流から下流へ流れます</b>。例えば「入荷 → 棚入れ」「ピッキング → 仕分け → 梱包」のように、
+上流工程で処理された分だけが下流工程に届きます（15分のタイムラグで伝播）。
+システムはこの流れを時間に沿ってシミュレーションし、「届いた分しか処理できない」という
+物理制約を守りながら配置を組みます。
+</p>
+<div class="flow">
+  <div class="fbox">入荷<small>生産性100/h</small></div><div class="farr">→</div>
+  <div class="fbox">棚入れ<small>生産性25/h</small></div>
+  <div style="width:30px"></div>
+  <div class="fbox">ピッキング<small>40/h</small></div><div class="farr">→</div>
+  <div class="fbox">仕分け<small>35/h</small></div><div class="farr">→</div>
+  <div class="fbox">梱包<small>28/h</small></div>
+</div>
+<div class="note">
+<b>重要：</b>上流の処理が遅れると下流に荷物が「滞留（バッファ）」します。各工程の間にどれだけ
+荷物が溜まっているかは「稼働グラフ」で確認できます（→ 第6章）。
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 class="sec" id="master">3. 各種マスタの意味と登録・管理</h2>
+<p>最適化の精度は、マスタ（基礎データ）の正確さで決まります。主なマスタは次の通りです。</p>
+
+<h3>3-1. 従業員マスタ</h3>
+<p>働く人の基本情報・勤務条件・スキルを管理します。</p>
+<table>
+  <tr><th>項目</th><th>意味</th></tr>
+  <tr><td>氏名 / 時給(円)</td><td>人件費計算の基礎。時給が高い人を早く帰すような最適化に使われます。</td></tr>
+  <tr><td>曜日ごとの勤務条件</td><td>曜日別に「出勤/休み」「勤務開始・終了時刻」「残業可否」「最低労働(分)」を設定。</td></tr>
+  <tr><td>スキル設定（習熟レベル）</td><td>工程ごとに対応可否と習熟レベルを設定。レベルにより処理生産性が変わります。</td></tr>
+</table>
+<table>
+  <tr><th>習熟レベル</th><th>生産性</th><th>意味</th></tr>
+  <tr><td>レベル1</td><td>80%</td><td>不慣れ（標準の8割の速さ）</td></tr>
+  <tr><td>レベル2</td><td>100%</td><td>標準</td></tr>
+  <tr><td>レベル3</td><td>120%</td><td>熟練（標準の1.2倍の速さ）</td></tr>
+</table>
+
+<h3>3-2. 工程マスタ・工程接続設定</h3>
+<table>
+  <tr><th>項目</th><th>意味</th></tr>
+  <tr><td>工程名 / ラインタイプ</td><td>工程の名称と、入庫（INBOUND）／出庫（OUTBOUND）の区分。</td></tr>
+  <tr><td>基準生産性</td><td>その工程で1人が1時間に処理できる標準量（例：入荷100個/h、梱包28個/h）。</td></tr>
+  <tr><td>バッファ容量(個)</td><td>その工程の前にどれだけ荷物を溜めておけるか（稼働グラフの上限点線）。</td></tr>
+  <tr><td>工程接続設定</td><td>「どの工程の次がどの工程か（上流→下流）」を定義。これが処理の流れになります。</td></tr>
+</table>
+
+<h3>3-3. 物量変換マスタ</h3>
+<p>
+工程をまたぐと「個数」が変わる場合の<b>変換係数</b>を設定します。例えば「1パレット入荷 → 30個に展開」
+のように、上流の処理量を下流の作業量へ変換する係数です。
+</p>
+
+<h3>3-4. 物量登録（対象日の物量）</h3>
+<p>
+対象日について、<b>時間帯ごとの物量（個）</b>を登録します。これが「その日の仕事の総量」になります。
+最適化はこの物量を、締切までに処理しきれるよう人を配置します。
+</p>
+
+<h3>3-5. 条件マスタ（システム条件）</h3>
+<p>最適化全体のルールを設定します。<span class="tag">条件マスタ ＞ システム条件</span></p>
+<table>
+  <tr><th>条件</th><th>意味</th></tr>
+  <tr><td>工程完了期限</td><td>各ラインの末端工程を「何時までに完了させるか」の締切。</td></tr>
+  <tr><td>残業時給倍率 / 残業開始閾値</td><td>残業の割増率と、何分working超で残業扱いになるか。</td></tr>
+  <tr><td>昼休憩・法定休憩</td><td>休憩の開始/終了時刻・必要時間。一定時間以上勤務すると自動付与。</td></tr>
+  <tr><td>最低勤務時間</td><td>配置するならこの時間以上働かせる（短時間だけの呼び出しを防ぐ）。</td></tr>
+  <tr><td>1工程の最低配置時間</td><td>一度入った工程になるべく連続で就かせる目安（細切れの工程移動を抑制）。</td></tr>
+  <tr><td>工程移動時の習熟ペナルティ</td><td>休憩を挟まず別工程へ移った直後のスロットは生産性が低下する設定（オン/オフ・低下率）。</td></tr>
+</table>
+
+<!-- ============ 4 ============ -->
+<h2 class="sec" id="methods">4. 最適配置の計算方法</h2>
+<p>計算は「<b>2つの方針（案）</b>」×「<b>3つの計算エンジン</b>」の組み合わせで行います。</p>
+
+<h3>4-1. 2つの方針（何を最適化するか）</h3>
+<div class="cardrow">
+  <div class="mcard">
+    <h4>案A：最速完了</h4>
+    <div class="sub">作業を最も早く終わらせる配置</div>
+    <p style="font-size:13px;margin:0;">完了時刻を最小化します。多少コストがかかっても、とにかく早く終わらせたい日に向きます。</p>
+  </div>
+  <div class="mcard">
+    <h4>案B：最低コスト</h4>
+    <div class="sub">期限を守りつつコストを最小化</div>
+    <p style="font-size:13px;margin:0;">締切を守れる範囲で人件費を最小化します。コスト重視の通常運用に向きます。</p>
+  </div>
+</div>
+
+<h3>4-2. 3つの計算エンジン（どう解くか）</h3>
+<table>
+  <tr><th>エンジン</th><th>イメージ</th><th>速さ</th><th>解の質</th></tr>
+  <tr>
+    <td><b>簡易計算<br>(GREEDY)</b></td>
+    <td>経験豊富な現場リーダーが直感で割り当てる方式。15分ずつ時間を進め、その瞬間に一番忙しい工程へ手を打つ。</td>
+    <td>◎ 数秒</td><td>△ 近似</td>
+  </tr>
+  <tr>
+    <td><b>焼きなまし法<br>(ANNEALING)</b></td>
+    <td>解を少しずつランダムに変えて改善を繰り返す方式。良くなれば採用、時々あえて悪化も試して局所最適を脱出。</td>
+    <td>○ 数十秒</td><td>○ 良好</td>
+  </tr>
+  <tr>
+    <td><b>OR<br>(数理最適化)</b></td>
+    <td>全組み合わせを数式で表し、数学的に最良解を探索。条件が許せば「これが最適」と証明付きで返す。</td>
+    <td>△ 数十秒〜数分</td><td>◎ 最良</td>
+  </tr>
+</table>
+<div class="note">
+普段は<b>簡易計算で素早く確認 → 納得いかなければ OR / 焼きなまし</b>で最良解を求める、という使い方が効率的です。
+</div>
+
+<h3>4-3. 連続化リペア（仕上げ処理）</h3>
+<p>
+計算後に「<b>連続化リペア</b>」という後処理が自動で走ります。これは、現実的でない
+<b>15分ごとの細切れな工程移動</b>を減らす仕上げです。<b>各工程の人数・処理量・コスト・完了時刻は
+一切変えずに</b>、「同じ人がなるべく同じ工程に居続ける」よう配置を組み替えます（下流に余力がある範囲で）。
+昼休憩を挟んだ工程変更は自然なものとして許容します。
+</p>
+
+<!-- ============ 5 ============ -->
+<h2 class="sec" id="read-opt">5. 最適化計算の見方</h2>
+<p>最適化を実行すると、エンジンごとに<b>案A・案Bのカード</b>が並びます。各カードの見方は次の通りです。</p>
+
+<!-- mock screen -->
+<div class="screen">
+  <div class="bar"><b>配置最適化</b> ／ エンジン：焼きなまし法（探索多・中速）</div>
+  <div class="body">
+    <div class="cardrow">
+      <!-- card A -->
+      <div class="mcard">
+        <h4>案A：最速完了</h4>
+        <div class="sub">作業を最も早く終わらせる配置</div>
+        <div class="kv"><span class="k">期限遵守</span><span class="grn">✓ 遵守</span></div>
+        <div class="kv"><span class="k">作業完了時間</span><span><b>08:45</b></span></div>
+        <div class="kv"><span class="k">総人件費</span><span>¥412,495</span></div>
+        <div class="kv"><span class="k">うち残業費</span><span>¥0</span></div>
+        <div class="kv"><span class="k">工程移動回数</span><span>116 回 <span class="grn" style="font-size:11px">（連続化前 128 回）</span></span></div>
+        <div class="log">
+          <div style="color:var(--gray);font-weight:600;margin-bottom:4px;">計算ログ</div>
+          <div class="kv"><span class="k">計算状態</span><span class="blue">時間内の最良解</span></div>
+          <div class="kv"><span class="k">最適性ギャップ</span><span>3.1%</span></div>
+          <div class="kv"><span class="k">計算時間</span><span>44.00 秒</span></div>
+          <div class="kv"><span class="k">検証パターン数</span><span>0 通り</span></div>
+          <div class="kv"><span class="k">連続化リペア</span><span>工程切替 128 → 116 回（12回削減）</span></div>
+        </div>
+        <div class="btnrow"><div class="btn">詳細を見る</div><div class="btn p">この案を選択</div></div>
+      </div>
+      <!-- card B -->
+      <div class="mcard">
+        <h4>案B：最低コスト</h4>
+        <div class="sub">期限を守りつつコストを最小化</div>
+        <div class="kv"><span class="k">期限遵守</span><span class="grn">✓ 遵守</span></div>
+        <div class="kv"><span class="k">作業完了時間</span><span><b>09:30</b></span></div>
+        <div class="kv"><span class="k">総人件費</span><span>¥363,305</span></div>
+        <div class="kv"><span class="k">うち残業費</span><span>¥0</span></div>
+        <div class="kv"><span class="k">工程移動回数</span><span>15 回</span></div>
+        <div class="log">
+          <div style="color:var(--gray);font-weight:600;margin-bottom:4px;">計算ログ</div>
+          <div class="kv"><span class="k">計算状態</span><span class="blue">時間内の最良解</span></div>
+          <div class="kv"><span class="k">最適性ギャップ</span><span>93.7%</span></div>
+          <div class="kv"><span class="k">計算時間</span><span>52.11 秒</span></div>
+          <div class="kv"><span class="k">検証パターン数</span><span>14,473 通り</span></div>
+          <div class="kv"><span class="k">連続化リペア</span><span>工程切替 15 → 15 回（削減なし）</span></div>
+        </div>
+        <div class="btnrow"><div class="btn">詳細を見る</div><div class="btn p">この案を選択</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>各項目の意味</h3>
+<table>
+  <tr><th>項目</th><th>意味・読み方</th></tr>
+  <tr><td>期限遵守</td><td><span class="ok">✓ 遵守</span>＝全工程が締切までに完了。違反があれば赤で表示。</td></tr>
+  <tr><td>作業完了時間</td><td>最後に荷物が処理された時刻。案A（最速）と案B（最低コスト）でここが変わる＝コストと完了時刻のトレードオフが分かる。</td></tr>
+  <tr><td>総人件費 / うち残業費</td><td>その配置の人件費合計と、そのうち残業割増分。</td></tr>
+  <tr><td>工程移動回数</td><td>従業員が工程を切り替えた回数。少ないほど現場はシンプル。括弧内は連続化リペア前の回数。</td></tr>
+</table>
+
+<h3>「計算ログ」の読み方（最重要）</h3>
+<table>
+  <tr><th>項目</th><th>意味</th></tr>
+  <tr><td>計算状態</td>
+      <td>
+        <b>最適解を確認 ✓</b>＝最適だと証明済み（文句なし）／
+        <b class="blue">時間内の最良解</b>＝良い解は出たが最適の証明は時間切れ（実用上は十分）／
+        <b>簡易計算（完了）</b>＝高度計算が解を出せず近似手法に切替。
+      </td></tr>
+  <tr><td>最適性ギャップ</td>
+      <td>「今の解」と「理論的な下限」の差(%)。<code>0%＝最適を証明</code>。小さいほど最適に近い。
+      ただし<b>下限の精度が緩いと、解が良くてもギャップが大きく見える</b>（特にコスト最小化や下界が緩い問題）。
+      数字が大きくても解が悪いとは限りません。</td></tr>
+  <tr><td>計算時間</td><td>その案の求解に要した実時間。</td></tr>
+  <tr><td>検証パターン数</td><td>探索した配置パターンの目安。<code>0</code>＝緩和した問題が一発で答えになり探索不要だった（正常）。</td></tr>
+  <tr><td>連続化リペア</td><td>細切れ工程切替を何回から何回へ減らしたか。「削減なし」＝安全に減らせる切替が無かった（必要な切替か、余力不足）。</td></tr>
+</table>
+<div class="note">
+<b>判断のコツ：</b>ギャップの数字より、<b>「作業完了時間」「総人件費」という実際の値</b>で案を比べるのが実務的です。
+例えば案Bの人件費が案Aより安ければ、コスト最小化はちゃんと機能しています。
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 class="sec" id="read-graph">6. 稼働グラフの見方</h2>
+<p>
+配置を選択すると<b>シフト画面</b>で勤務表を確認でき、その中の<b>稼働グラフ</b>タブで処理の流れを可視化できます。
+グラフは大きく2種類あります。
+</p>
+
+<h3>6-1. 人員配置（シフト表）</h3>
+<p>誰が何時にどの工程に就いているかを時間帯ごとに色分け表示します。連続化リペア後は、同じ人が同じ工程に
+連続して就いている（細切れでない）ことが確認できます。</p>
+<div class="screen">
+  <div class="bar"><b>シフト</b> ／ 人員配置</div>
+  <div class="body gantt">
+    <div class="grow"><div class="gname">佐藤</div><div class="gtrack">
+      <div class="seg" style="width:45%;background:#3b82f6"></div>
+      <div class="seg" style="width:10%;background:#fde68a"></div>
+      <div class="seg" style="width:45%;background:#3b82f6"></div></div></div>
+    <div class="grow"><div class="gname">鈴木</div><div class="gtrack">
+      <div class="seg" style="width:30%;background:#16a34a"></div>
+      <div class="seg" style="width:10%;background:#fde68a"></div>
+      <div class="seg" style="width:60%;background:#16a34a"></div></div></div>
+    <div class="grow"><div class="gname">高橋</div><div class="gtrack">
+      <div class="seg" style="width:55%;background:#a855f7"></div>
+      <div class="seg" style="width:45%;background:#f97316"></div></div></div>
+    <div class="legend">
+      <span><i class="sw" style="background:#3b82f6"></i>入荷</span>
+      <span><i class="sw" style="background:#16a34a"></i>棚入れ</span>
+      <span><i class="sw" style="background:#a855f7"></i>ピッキング</span>
+      <span><i class="sw" style="background:#f97316"></i>仕分け</span>
+      <span><i class="sw" style="background:#fde68a"></i>昼休憩</span>
+    </div>
+    <div class="cap">※ 同じ色が横に連続＝同じ工程に連続配置（細切れ移動が少ない良い状態）</div>
+  </div>
+</div>
+
+<h3>6-2. 累積処理グラフ</h3>
+<p>各工程について「<b>到着した量（届いた仕事）</b>」と「<b>処理した量</b>」の累積を時系列で重ねて表示します。
+2本の線が開いているほど、その工程で仕事が溜まっている（滞留している）ことを意味します。</p>
+<div class="screen">
+  <div class="bar"><b>シフト</b> ／ 稼働グラフ ／ 累積処理</div>
+  <div class="body">
+  <svg viewBox="0 0 560 220" width="100%">
+    <line x1="40" y1="10" x2="40" y2="185" stroke="#cbd5e1"/>
+    <line x1="40" y1="185" x2="540" y2="185" stroke="#cbd5e1"/>
+    <text x="8" y="20" font-size="11" fill="#6b7280">量</text>
+    <text x="510" y="205" font-size="11" fill="#6b7280">時刻</text>
+    <!-- arrived -->
+    <polyline points="40,185 140,120 260,70 380,40 540,30" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-dasharray="5 4"/>
+    <!-- processed -->
+    <polyline points="40,185 140,150 260,110 380,60 540,32" fill="none" stroke="#2563eb" stroke-width="2.5"/>
+    <text x="300" y="92" font-size="11" fill="#94a3b8">到着量（累積）</text>
+    <text x="300" y="135" font-size="11" fill="#2563eb">処理量（累積）</text>
+    <text x="150" y="175" font-size="10" fill="#6b7280">08:00　　09:00　　10:00　　11:00</text>
+  </svg>
+  <div class="cap">2本の線の縦の開き＝その時点の滞留量。最後に処理線が到着線に追いつく＝作業完了。</div>
+  </div>
+</div>
+
+<h3>6-3. 工程間滞留量（バッファ）グラフ</h3>
+<p>工程と工程の間に<b>どれだけ荷物が溜まっているか（処理残）</b>を時系列で表示します。
+点線は各工程の<b>バッファ容量（上限）</b>。実線がこの点線を超えると、溜めきれず溢れる危険のサインです。</p>
+<div class="screen">
+  <div class="bar"><b>シフト</b> ／ 稼働グラフ ／ 工程間滞留量（バッファ）</div>
+  <div class="body">
+  <svg viewBox="0 0 560 220" width="100%">
+    <line x1="40" y1="10" x2="40" y2="185" stroke="#cbd5e1"/>
+    <line x1="40" y1="185" x2="540" y2="185" stroke="#cbd5e1"/>
+    <!-- capacity dotted -->
+    <line x1="40" y1="55" x2="540" y2="55" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="445" y="50" font-size="10" fill="#ef4444">バッファ容量（上限）</text>
+    <!-- buffer solid (rise then fall) -->
+    <polyline points="40,185 130,150 220,95 300,70 380,110 480,160 540,182" fill="none" stroke="#16a34a" stroke-width="2.5"/>
+    <text x="225" y="88" font-size="11" fill="#16a34a">棚入れ前の滞留</text>
+    <text x="150" y="175" font-size="10" fill="#6b7280">08:00　　09:00　　10:00　　11:00</text>
+  </svg>
+  <div class="cap">山が高い＝その工程の前で荷物が溜まっている。点線（上限）を超えそうなら人員強化のサイン。</div>
+  </div>
+</div>
+
+<div class="note">
+<b>稼働グラフの活用：</b>
+「滞留が点線（容量）を超える工程」＝ボトルネック。そこに人を増やす／前工程を遅らせるといった
+判断材料になります。連続化リペアは下流バッファに余力がある範囲でだけ配置を組み替えるため、
+このグラフが「容量超え」しないことが保証されています。
+</div>
+
+<hr style="margin:50px 0;border:none;border-top:1px solid var(--line)">
+<p style="color:var(--gray);font-size:13px;text-align:center;">
+倉庫人員配置最適化システム ユーザーガイド
+</p>
+
+</main>
+</div>
+</body>
+</html>
