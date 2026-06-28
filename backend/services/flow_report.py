@@ -175,6 +175,9 @@ def compute_flow_report(date: str, result_id: str, db: Session) -> Dict[str, Lis
                     )
 
             if cum_arrived[pid] > 1e-9 or cum_processed[pid] > 1e-9:
+                # 稼働率 = 実処理数 ÷ 配置人員の最大処理能力。
+                # 人を配置していない（cap=0）スロットは稼働率の対象外（None）。
+                utilization = (throughput / cap) if cap > 1e-9 else None
                 result[pid].append({
                     "slot": slot,
                     "incoming": round(inc, 1),
@@ -182,6 +185,10 @@ def compute_flow_report(date: str, result_id: str, db: Session) -> Dict[str, Lis
                     "backlog": round(backlog[pid], 1),
                     "cum_arrived": round(cum_arrived[pid], 1),
                     "cum_processed": round(cum_processed[pid], 1),
+                    # 配置人員から求まる最大処理能力（個/スロット）
+                    "capacity": round(cap, 1),
+                    # 稼働率（0.0〜1.0）。cap=0 のスロットは None
+                    "utilization": round(utilization, 4) if utilization is not None else None,
                 })
 
     return result

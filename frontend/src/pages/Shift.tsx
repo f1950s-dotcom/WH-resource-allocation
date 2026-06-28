@@ -128,9 +128,14 @@ export default function Shift() {
 
   // 処理フローはバックエンドが唯一の真実として計算する（フロントでの
   // 再シミュレーションは廃止）。/api/shifts/{date}/flow の結果をそのまま表示。
-  const simCumData: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = (() => {
+  type FlowRow = {
+    slot: string; 発生量累計: number; 処理実績累計: number;
+    発生量: number; 処理量: number; 処理残: number;
+    最大処理能力: number | null; 稼働率: number | null;
+  };
+  const simCumData: Record<string, FlowRow[]> = (() => {
     const procData = (shiftFlow as any)?.processes ?? {};
-    const out: Record<string, Array<{ slot: string; 発生量累計: number; 処理実績累計: number; 発生量: number; 処理量: number; 処理残: number }>> = {};
+    const out: Record<string, FlowRow[]> = {};
     Object.keys(procData).forEach((pid: string) => {
       out[pid] = (procData[pid] as any[]).map((r: any) => ({
         slot: r.slot,
@@ -139,6 +144,8 @@ export default function Shift() {
         発生量: r.incoming,
         処理量: r.processed,
         処理残: r.backlog,
+        最大処理能力: r.capacity ?? null,
+        稼働率: r.utilization ?? null,
       }));
     });
     return out;
@@ -350,6 +357,11 @@ export default function Shift() {
                       const totalIn = Math.round(last.発生量累計 * 10) / 10;
                       const totalDone = Math.round(last.処理実績累計 * 10) / 10;
                       const remain = Math.round((last.処理残) * 10) / 10;
+                      // 当日平均稼働率＝Σ実処理 ÷ Σ最大処理能力（人を配置したスロットのみ）
+                      const capSum = rows.reduce((s, r) => s + (r.最大処理能力 ?? 0), 0);
+                      const doneOnCap = rows.reduce(
+                        (s, r) => s + (r.最大処理能力 != null ? r.処理量 : 0), 0);
+                      const avgUtil = capSum > 0 ? doneOnCap / capSum : null;
                       return (
                         <div key={pid} className="border rounded-lg overflow-hidden">
                           <div className="flex items-center justify-between bg-gray-50 px-3 py-2 border-b">
@@ -361,6 +373,9 @@ export default function Shift() {
                               <span>発生計：<strong>{totalIn.toLocaleString()}</strong></span>
                               <span>処理計：<strong>{totalDone.toLocaleString()}</strong></span>
                               <span className={remain > 0.5 ? 'text-red-600' : ''}>未処理残：<strong>{remain.toLocaleString()}</strong></span>
+                              <span title="当日平均＝Σ実処理 ÷ Σ最大処理能力（配置スロットのみ）">
+                                平均稼働率：<strong>{avgUtil != null ? `${(avgUtil * 100).toFixed(0)}%` : '—'}</strong>
+                              </span>
                             </div>
                           </div>
                           <div className="overflow-auto" style={{ maxHeight: '300px' }}>
@@ -369,7 +384,9 @@ export default function Shift() {
                                 <tr>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-left">時刻</th>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-right">処理発生</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right" title="配置人員から求まる最大処理能力（個/15分）">最大処理能力</th>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-right">処理量</th>
+                                  <th className="border px-2 py-1.5 bg-gray-50 text-right" title="実処理量 ÷ 最大処理能力">稼働率</th>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-right">処理残</th>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-right">発生累計</th>
                                   <th className="border px-2 py-1.5 bg-gray-50 text-right">処理累計</th>
@@ -380,7 +397,9 @@ export default function Shift() {
                                   <tr key={r.slot} className="hover:bg-gray-50">
                                     <td className="border px-2 py-1 font-medium">{r.slot}</td>
                                     <td className="border px-2 py-1 text-right">{r.発生量 > 0 ? r.発生量.toLocaleString() : ''}</td>
+                                    <td className="border px-2 py-1 text-right text-gray-500">{r.最大処理能力 != null && r.最大処理能力 > 0 ? r.最大処理能力.toLocaleString() : ''}</td>
                                     <td className="border px-2 py-1 text-right">{r.処理量 > 0 ? r.処理量.toLocaleString() : ''}</td>
+                                    <td className={`border px-2 py-1 text-right ${r.稼働率 == null ? 'text-gray-300' : r.稼働率 >= 0.999 ? 'text-green-600' : r.稼働率 < 0.7 ? 'text-orange-500' : 'text-gray-600'}`}>{r.稼働率 != null ? `${(r.稼働率 * 100).toFixed(0)}%` : ''}</td>
                                     <td className={`border px-2 py-1 text-right ${r.処理残 > 0.5 ? 'text-red-600 font-medium' : 'text-gray-400'}`}>{r.処理残 > 0.05 ? r.処理残.toLocaleString() : ''}</td>
                                     <td className="border px-2 py-1 text-right text-gray-500">{r.発生量累計.toLocaleString()}</td>
                                     <td className="border px-2 py-1 text-right text-gray-500">{r.処理実績累計.toLocaleString()}</td>
