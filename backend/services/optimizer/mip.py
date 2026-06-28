@@ -23,10 +23,13 @@ def _adaptive_time_limit(num_int_vars: int) -> float:
     MIPの解時間は整数変数数に線形ではない（最悪は指数的）が、上限の
     「目安」としては変数規模に応じて伸ばすのが妥当。実際の早期終了は
     ギャップ基準（ratioGap）が担うので、これはあくまで安全弁（最悪上限）。
-    5秒（小規模）〜60秒（大規模）の範囲にクランプする。
+    5秒（小規模）〜600秒（大規模）の範囲にクランプする。
+    重い日に簡易計算へ転落しにくいよう上限を引き上げている。案A・案Bは
+    並列実行されるため、この上限を上げても画面の待ち時間は「両案の和」では
+    なく「重い方1つ」で済む。
     """
     secs = 5.0 + num_int_vars / 150.0
-    return max(5.0, min(300.0, secs))
+    return max(5.0, min(600.0, secs))
 
 
 def solve_mip(opt, objective_type: str,
@@ -489,7 +492,7 @@ def _mip_worker(module_name: str, class_name: str, plan_date: str,
 
 
 def solve_mip_isolated(opt, objective_type: str,
-                       hard_timeout_sec: float = 420.0):
+                       hard_timeout_sec: float = 700.0):
     """solve_mip を子プロセスで実行し、暴走・クラッシュから親を守るラッパー。
 
     子が hard_timeout_sec 以内に結果を返さなければ強制終了して None を返す。

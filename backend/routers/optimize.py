@@ -14,7 +14,25 @@ router = APIRouter()
 _running: dict = {}
 
 
+def _run_one_plan(OptCls, date: str, method: str):
+    """1つの案（FASTEST/CHEAPEST）を専用のDBセッションで実行する。
+
+    並列実行するため、案ごとに独立したセッションを使う（SQLAlchemyの
+    セッションはスレッド間で共有不可）。各案の run() 内部でMIPを子プロセス
+    に隔離して解くため、計算本体はGILの影響を受けず並列に進む。
+    """
+    from database import engine
+    from sqlalchemy.orm import sessionmaker
+    SessionLocal = sessionmaker(bind=engine)
+    s = SessionLocal()
+    try:
+        OptCls(date, s, method).run()
+    finally:
+        s.close()
+
+
 def _run_optimization(date: str, method: str):
+    import threading
     from database import engine
     from sqlalchemy.orm import sessionmaker
     from services.volume_expansion import expand_volume
@@ -42,10 +60,20 @@ def _run_optimization(date: str, method: str):
                 OptimizationResult.result_id.in_(stale_ids)
             ).delete(synchronize_session=False)
             db.commit()
-        FastestOptimizer(date, db, method).run()
-        CheapestOptimizer(date, db, method).run()
     finally:
         db.close()
+
+    # 案A（最速）と案B（最低コスト）は互いに独立なので並列実行する。
+    # 逐次だと「両案の和」だけ待つが、並列なら「重い方ひとつ」の時間で済むため、
+    # MIPの時間上限を引き上げても画面の待ち時間が膨らみにくい。
+    threads = [
+        threading.Thread(target=_run_one_plan, args=(FastestOptimizer, date, method)),
+        threading.Thread(target=_run_one_plan, args=(CheapestOptimizer, date, method)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     _running.pop(date, None)
 
 

@@ -15,7 +15,11 @@ if DATABASE_URL.startswith("sqlite:///"):
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    # check_same_thread=False: 複数スレッドから接続を使えるようにする。
+    # timeout=30: 案A・案Bの並列実行で書き込みが競合した際、即エラーにせず
+    #             最大30秒ロック解放を待つ（SQLiteの書き込みは直列化されるため）。
+    connect_args={"check_same_thread": False, "timeout": 30}
+    if DATABASE_URL.startswith("sqlite") else {},
     echo=False,
 )
 
