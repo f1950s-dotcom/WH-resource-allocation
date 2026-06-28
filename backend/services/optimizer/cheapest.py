@@ -12,13 +12,20 @@ class CheapestOptimizer(BaseOptimizer):
     RESULT_TYPE = "CHEAPEST"
 
     def _emp_sort_key(self, emp, process_id, slot, assignments):
-        # Cheapest effective wage first (avoid overtime), higher skill as tiebreak
+        # 「処理1個あたりのコスト」が安い順に選ぶ。
+        # 時給だけで選ぶと、安いが低スキル（低生産性）な人を優先してしまい、
+        # 同じ物量を捌くのに延べ人時が増えて総コストがかえって高くなる
+        # （最速案より高くなる逆転が起きる）。実効時給を生産性（スキル率）で
+        # 割った「単位処理コスト」で選ぶことで、総コスト最小に近づける。
         emp_assignments = assignments[emp.employee_id]
         is_ot = self._is_overtime_slot(emp, slot, emp_assignments)
         wage = float(emp.hourly_wage)
         effective = wage * (self.overtime_wage_rate if is_ot else 1.0)
         skill = self.skills.get(emp.employee_id, {}).get(process_id, 0)
-        return (effective, -skill)
+        # スキル無し（=配置不可）は最後尾へ。スキル有りは実効時給÷生産性。
+        rate = self.skill_rates.get(skill, 0.0)
+        cost_per_unit = (effective / rate) if rate > 0 else float("inf")
+        return (cost_per_unit, -skill)
 
     def _objective(self, assignments):
         return self.calc_score(assignments)["total_cost"]
