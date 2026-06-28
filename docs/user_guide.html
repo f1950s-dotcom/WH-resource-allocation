@@ -193,12 +193,19 @@
 対象日について、<b>時間帯ごとの物量（個）</b>を登録します。これが「その日の仕事の総量」になります。
 最適化はこの物量を、締切までに処理しきれるよう人を配置します。
 </p>
+<ul>
+  <li><b>入庫・出庫はまとめて保存</b>：画面上部の「入庫／出庫」タブで切り替えて入力しますが、
+      <b>保存ボタンを押すと、その時点で入力されている入庫・出庫の両方が一括保存</b>されます。
+      タブを切り替えながら入力した内容が保存漏れになることはありません。</li>
+  <li><b>数値は直接入力</b>：物量セルは数字をそのままキー入力します（増減の矢印ボタンはありません）。</li>
+  <li><b>CSVインポート</b>：時間帯・物量のCSVを取り込んで一括入力することもできます。</li>
+</ul>
 
 <h3>3-5. 条件マスタ（システム条件）</h3>
 <p>最適化全体のルールを設定します。<span class="tag">条件マスタ ＞ システム条件</span></p>
 <table>
   <tr><th>条件</th><th>意味</th></tr>
-  <tr><td>工程完了期限</td><td>各ラインの末端工程を「何時までに完了させるか」の締切。</td></tr>
+  <tr><td>工程完了期限（定時の目安）</td><td>各ラインの末端工程（入庫の棚入れ・出庫の梱包）を「残業なしで何時までに終わらせたいか」の目安時刻。<b>処理を強制的に打ち切るハードな締切ではありません</b>。詳しくは第4章の優先順位を参照。</td></tr>
   <tr><td>残業時給倍率 / 残業開始閾値</td><td>残業の割増率と、何分working超で残業扱いになるか。</td></tr>
   <tr><td>昼休憩・法定休憩</td><td>休憩の開始/終了時刻・必要時間。一定時間以上勤務すると自動付与。</td></tr>
   <tr><td>最低勤務時間</td><td>配置するならこの時間以上働かせる（短時間だけの呼び出しを防ぐ）。</td></tr>
@@ -222,6 +229,22 @@
     <div class="sub">期限を守りつつコストを最小化</div>
     <p style="font-size:13px;margin:0;">締切を守れる範囲で人件費を最小化します。コスト重視の通常運用に向きます。</p>
   </div>
+</div>
+
+<h3>4-1b. 作業を終わらせる優先順位（残業の扱い）</h3>
+<p>どちらの方針でも、<b>入庫・出庫それぞれの最終工程（棚入れ・梱包）まで作業を終わらせること</b>を、
+次の優先順位で目指します。</p>
+<table>
+  <tr><th>優先</th><th>方針</th></tr>
+  <tr><td><b>① 最優先</b></td><td><b>残業なし</b>（定時内）で、前工程も含めてすべて終わらせる。</td></tr>
+  <tr><td><b>② 次善</b></td><td>定時内で終わらなければ、<b>残業して残業最大終了時刻までにやり切る</b>。
+      ただし<b>残業できない人を残業帯に配置することはありません</b>（勤務条件で担保）。</td></tr>
+  <tr><td><b>③ 最後</b></td><td>それでも終わらなければ、<b>作業残を残して帰る</b>（無理な配置はしない）。</td></tr>
+</table>
+<div class="note">
+工程完了期限（例：17:00）は「<b>残業なしで間に合ったか</b>」を判定するための目安です。
+間に合わない場合でも、残業可能な人がいれば残業して作業を終わらせにいきます
+（処理を17:00で強制的に打ち切ることはしません）。
 </div>
 
 <h3>4-2. 3つの計算エンジン（どう解くか）</h3>
@@ -269,9 +292,12 @@
         <h4>案A：最速完了</h4>
         <div class="sub">作業を最も早く終わらせる配置</div>
         <div class="kv"><span class="k">期限遵守</span><span class="grn">✓ 遵守</span></div>
+        <div class="kv"><span class="k">作業残</span><span class="grn">なし</span></div>
         <div class="kv"><span class="k">作業完了時間</span><span><b>08:45</b></span></div>
         <div class="kv"><span class="k">総人件費</span><span>¥412,495</span></div>
         <div class="kv"><span class="k">うち残業費</span><span>¥0</span></div>
+        <div class="kv"><span class="k">出社人数</span><span>25 <span style="color:var(--gray)">/ 28 名</span></span></div>
+        <div class="kv"><span class="k">総人時（昼休み除く）</span><span>168 人時</span></div>
         <div class="kv"><span class="k">工程移動回数</span><span>116 回 <span class="grn" style="font-size:11px">（連続化前 128 回）</span></span></div>
         <div class="log">
           <div style="color:var(--gray);font-weight:600;margin-bottom:4px;">計算ログ</div>
@@ -288,9 +314,12 @@
         <h4>案B：最低コスト</h4>
         <div class="sub">期限を守りつつコストを最小化</div>
         <div class="kv"><span class="k">期限遵守</span><span class="grn">✓ 遵守</span></div>
+        <div class="kv"><span class="k">作業残</span><span class="grn">なし</span></div>
         <div class="kv"><span class="k">作業完了時間</span><span><b>09:30</b></span></div>
         <div class="kv"><span class="k">総人件費</span><span>¥363,305</span></div>
         <div class="kv"><span class="k">うち残業費</span><span>¥0</span></div>
+        <div class="kv"><span class="k">出社人数</span><span>21 <span style="color:var(--gray)">/ 28 名</span></span></div>
+        <div class="kv"><span class="k">総人時（昼休み除く）</span><span>150 人時</span></div>
         <div class="kv"><span class="k">工程移動回数</span><span>15 回</span></div>
         <div class="log">
           <div style="color:var(--gray);font-weight:600;margin-bottom:4px;">計算ログ</div>
@@ -309,9 +338,12 @@
 <h3>各項目の意味</h3>
 <table>
   <tr><th>項目</th><th>意味・読み方</th></tr>
-  <tr><td>期限遵守</td><td><span class="ok">✓ 遵守</span>＝全工程が締切までに完了。違反があれば赤で表示。</td></tr>
+  <tr><td>期限遵守</td><td><span class="ok">✓ 遵守</span>＝末端工程が定時（目安時刻）までに完了。間に合わなかった場合は<b class="ok" style="color:#ef4444">✗ 定時超過</b>と赤で表示（＝残業して終わらせた、または作業残あり）。</td></tr>
+  <tr><td>作業残</td><td>当日処理しきれずに残った作業量。<span class="ok">なし</span>＝全量処理済み。残った場合は<b style="color:#ef4444">あり（◯◯個）</b>と表示。残業しても終わらなかったことを示す。</td></tr>
   <tr><td>作業完了時間</td><td>最後に荷物が処理された時刻。案A（最速）と案B（最低コスト）でここが変わる＝コストと完了時刻のトレードオフが分かる。</td></tr>
   <tr><td>総人件費 / うち残業費</td><td>その配置の人件費合計と、そのうち残業割増分。</td></tr>
+  <tr><td>出社人数</td><td><b>実際に配置された人数 / その日出社しうる人数</b>。分母（出社可能人数）は人員マスタの勤務条件から決まり<b>計算手法によらず一定</b>。分子は配置結果により変わる。</td></tr>
+  <tr><td>総人時（昼休み除く）</td><td>実働の人時合計（昼休み・休憩は除く）。投入した労働量の総量。</td></tr>
   <tr><td>工程移動回数</td><td>従業員が工程を切り替えた回数。少ないほど現場はシンプル。括弧内は連続化リペア前の回数。</td></tr>
 </table>
 
@@ -416,11 +448,29 @@
   </div>
 </div>
 
+<h3>6-4. 工程別 稼働率テーブル</h3>
+<p>各工程について、時間帯（15分）ごとに<b>「配置人員の最大処理能力」「実際の処理量」「稼働率」</b>を表で確認できます。
+稼働率は <code>処理量 ÷ 最大処理能力</code> で、<b>人を配置していても作業が能力に満たなければ100%未満</b>になります
+（整数の人数に対し作業量は端数になるため、100%未満は通常よく発生します）。</p>
+<div class="screen">
+  <div class="bar"><b>シフト</b> ／ 稼働グラフ ／ 工程別テーブル（梱包）　<span style="color:#9ca3af">平均稼働率 82%</span></div>
+  <div class="body">
+    <table style="margin:0;">
+      <tr><th>時刻</th><th style="text-align:right">処理発生</th><th style="text-align:right">最大処理能力</th><th style="text-align:right">処理量</th><th style="text-align:right">稼働率</th><th style="text-align:right">処理残</th></tr>
+      <tr><td>13:00</td><td style="text-align:right">30</td><td style="text-align:right;color:#6b7280">7.0</td><td style="text-align:right">7.0</td><td style="text-align:right" class="grn">100%</td><td style="text-align:right;color:#ef4444">23</td></tr>
+      <tr><td>13:15</td><td style="text-align:right">10</td><td style="text-align:right;color:#6b7280">7.0</td><td style="text-align:right">7.0</td><td style="text-align:right" class="grn">100%</td><td style="text-align:right;color:#ef4444">26</td></tr>
+      <tr><td>16:45</td><td style="text-align:right"></td><td style="text-align:right;color:#6b7280">7.0</td><td style="text-align:right">4.2</td><td style="text-align:right" style="color:#f97316">60%</td><td style="text-align:right;color:#9ca3af"></td></tr>
+    </table>
+    <div class="cap">稼働率 100%＝能力をフルに使えている／60%など低い＝作業が少なく人が余り気味（増減の判断材料）。</div>
+  </div>
+</div>
+
 <div class="note">
 <b>稼働グラフの活用：</b>
 「滞留が点線（容量）を超える工程」＝ボトルネック。そこに人を増やす／前工程を遅らせるといった
-判断材料になります。連続化リペアは下流バッファに余力がある範囲でだけ配置を組み替えるため、
-このグラフが「容量超え」しないことが保証されています。
+判断材料になります。<b>稼働率テーブルでは、どの時間帯に人が余っている（稼働率が低い）か</b>が分かり、
+増員・減員の判断に使えます。連続化リペアは下流バッファに余力がある範囲でだけ配置を組み替えるため、
+バッファグラフが「容量超え」しないことが保証されています。
 </div>
 
 <hr style="margin:50px 0;border:none;border-top:1px solid var(--line)">
