@@ -25,6 +25,12 @@ class OptimizationResult(Base):
     process_moves_before_repair = Column(Integer)
     # 全処理が完了した時刻（HH:MM）。処理皆無なら NULL
     completion_time = Column(Text)
+    # 当日出社可能な人数（その日の勤務条件を持つ従業員数）
+    available_headcount = Column(Integer)
+    # 実際に1スロット以上配置された（＝出社した）人数
+    assigned_headcount = Column(Integer)
+    # 総人時（昼休み除く実働）。WORKスロット数 × スロット時間(時)
+    total_work_hours = Column(Numeric(8, 2))
 
 
 class OptimizationAssignment(Base):

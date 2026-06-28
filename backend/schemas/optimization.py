@@ -37,6 +37,9 @@ class OptimizationResultResponse(BaseModel):
     solve_seconds: Optional[float] = None
     process_moves_before_repair: Optional[int] = None
     completion_time: Optional[str] = None
+    available_headcount: Optional[int] = None
+    assigned_headcount: Optional[int] = None
+    total_work_hours: Optional[float] = None
 
 
 class OptimizationResultDetail(BaseModel):

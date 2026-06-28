@@ -148,6 +148,21 @@ def init_db():
                 "ALTER TABLE optimization_results ADD COLUMN completion_time TEXT"
             ))
             conn.commit()
+        if "available_headcount" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN available_headcount INTEGER"
+            ))
+            conn.commit()
+        if "assigned_headcount" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN assigned_headcount INTEGER"
+            ))
+            conn.commit()
+        if "total_work_hours" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN total_work_hours NUMERIC(8,2)"
+            ))
+            conn.commit()
 
         # Skill level 1 was 0.70; correct to 0.80 for existing databases
         row = conn.execute(text(

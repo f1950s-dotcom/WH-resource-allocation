@@ -190,6 +190,21 @@ export default function Optimization() {
                             <span className="text-gray-500">作業完了時間</span>
                             <span className="font-medium">{r.completion_time ?? '—'}</span>
                           </div>
+                          <div className="flex justify-between text-sm" title="当日出社しうる人数のうち、実際に配置された人数">
+                            <span className="text-gray-500">出社人数</span>
+                            <span className="font-medium">
+                              {r.assigned_headcount ?? '—'}
+                              {r.available_headcount != null && (
+                                <span className="text-gray-400"> / {r.available_headcount} 名</span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm" title="実働スロットの合計（昼休み等の休憩は除く）">
+                            <span className="text-gray-500">総人時（昼休み除く）</span>
+                            <span className="font-medium">
+                              {r.total_work_hours != null ? `${r.total_work_hours.toLocaleString()} 人時` : '—'}
+                            </span>
+                          </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-500">工程移動回数</span>
                             <span>

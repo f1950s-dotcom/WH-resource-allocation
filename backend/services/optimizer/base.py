@@ -603,6 +603,20 @@ class BaseOptimizer:
         # 出社しない・午前で帰る・午後から来る人の「昼」表示を消す
         self._strip_orphan_lunch_breaks(assignments)
 
+        # ヘッドカウント・総人時の集計
+        #  - 出社可能HC：当日の勤務条件を持つ従業員数（出社しうる人数）
+        #  - 実出社HC ：実際に1スロット以上WORK配置された人数
+        #  - 総人時   ：WORKスロット数 × スロット時間（昼休み等の非WORKは除外）
+        available_headcount = len(self.active_employees)
+        work_slot_count = 0
+        assigned_headcount = 0
+        for ea in assignments.values():
+            n_work = sum(1 for a in ea.values() if a.slot_type == "WORK")
+            if n_work > 0:
+                assigned_headcount += 1
+            work_slot_count += n_work
+        total_work_hours = work_slot_count * self.slot_hours
+
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         result_id = str(uuid.uuid4())
 
@@ -665,6 +679,9 @@ class BaseOptimizer:
                 self.repair_info.get("moves_before") if self.repair_info else None
             ),
             completion_time=self._completion_time(assignments),
+            available_headcount=available_headcount,
+            assigned_headcount=assigned_headcount,
+            total_work_hours=round(total_work_hours, 2),
         )
         self.db.add(result)
 
