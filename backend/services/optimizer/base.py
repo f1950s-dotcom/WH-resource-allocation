@@ -93,6 +93,10 @@ class BaseOptimizer:
         # 1工程の最低連続配置時間（分）：頻繁な工程移動を抑制（0=無効）。
         # ただしその工程の当日作業が完了するタイミングでは適用しない。
         self.min_process_assignment_minutes = int(conds.get("min_process_assignment_minutes", "0"))
+        # 連続化リペアで「工程切替を減らすために許容する総コスト増加率」。
+        # 0=コストを一切増やさない（席のラベル付け替えのみ）。例:0.03=最大+3%まで
+        # 担当者を入れ替えて切替を減らしてよい（処理量・締切は悪化させない）。
+        self.repair_cost_budget_rate = float(conds.get("repair_cost_budget_rate", "0.03"))
 
         # Load skill productivity rates
         self.skill_rates = {
@@ -531,6 +535,96 @@ class BaseOptimizer:
                         a.process_id = cur  # 不採用：戻す
             if not improved:
                 break
+
+        # ── フェーズ3：コスト許容枠つきの席入れ替え（工程別人数は維持） ──
+        # 切替を起こしている席を、その工程に連続で就ける別の人へ入れ替える。
+        # 工程別の人数（人員計画）は変えないので当日の処理量はほぼ保たれ、担当者が
+        # 変わることで人件費が動く。総コスト増が許容枠 repair_cost_budget_rate 以内で、
+        # かつ未処理量・締切が悪化しない場合のみ採用する（0なら本フェーズは無効）。
+        budget_rate = getattr(self, "repair_cost_budget_rate", 0.0)
+        if budget_rate > 0:
+            slots_of = self.employee_available_slots
+            idx_of = self.employee_slot_index
+
+            def proc_at(eid: str, slot: str, off: int):
+                im = idx_of.get(eid, {})
+                i = im.get(slot)
+                if i is None:
+                    return None
+                sl = slots_of.get(eid, [])
+                j = i + off
+                if j < 0 or j >= len(sl):
+                    return None
+                aa = assignments.get(eid, {}).get(sl[j])
+                return aa.process_id if (aa is not None and aa.slot_type == "WORK") else None
+
+            sc0 = self.calc_score(assignments)
+            base_cost = sc0["total_cost"]
+            base_m = sc0["total_moves"]
+            base_bl = self._flow_backlog_fixed(assignments)
+            base_dv = (sum(sc0["deadline_violations"].values())
+                       if sc0["deadline_violations"] else 0.0)
+            cost_cap = base_cost * (1.0 + budget_rate)
+
+            trials = 800
+            for _pass in range(4):
+                improved = False
+                seats = [
+                    (eid, s, a.process_id)
+                    for eid, ea in assignments.items()
+                    for s, a in ea.items() if a.slot_type == "WORK"
+                ]
+                for (eid, s, p) in seats:
+                    if trials <= 0:
+                        break
+                    a = assignments.get(eid, {}).get(s)
+                    if a is None or a.slot_type != "WORK" or a.process_id != p:
+                        continue
+                    # この席が切替に関与しているか（前後どちらかが別工程）
+                    prevp = proc_at(eid, s, -1)
+                    nextp = proc_at(eid, s, +1)
+                    if not ((prevp is not None and prevp != p)
+                            or (nextp is not None and nextp != p)):
+                        continue
+                    for emp in self.active_employees:
+                        bid = emp.employee_id
+                        if bid == eid or p not in self.skills.get(bid, {}):
+                            continue
+                        if s not in idx_of.get(bid, {}):
+                            continue
+                        if assignments.get(bid, {}).get(s) is not None:
+                            continue  # Bはそのスロット既に就労/休憩中
+                        # Bがpに連続で就ける（前後どちらかがp）場合だけ切替が減る
+                        if proc_at(bid, s, -1) != p and proc_at(bid, s, +1) != p:
+                            continue
+                        trials -= 1
+                        # 試行：席を A→B へ付け替え
+                        assignments[eid].pop(s, None)
+                        bmap = assignments.setdefault(bid, {})
+                        is_ot = self._is_overtime_slot(emp, s, bmap)
+                        bmap[s] = Assignment(
+                            employee_id=bid, process_id=p, time_slot_start=s,
+                            slot_type="WORK", is_overtime=is_ot,
+                            slot_cost=self._calc_slot_cost(emp, s, bmap),
+                        )
+                        sc = self.calc_score(assignments)
+                        m = sc["total_moves"]
+                        bl = self._flow_backlog_fixed(assignments)
+                        dv = (sum(sc["deadline_violations"].values())
+                              if sc["deadline_violations"] else 0.0)
+                        if (m < base_m and bl <= base_bl + 1e-6
+                                and dv <= base_dv + 1e-6
+                                and sc["total_cost"] <= cost_cap):
+                            base_m, base_bl, base_dv = m, bl, dv
+                            improved = True
+                            break  # この席は解決。次の席へ
+                        # 不採用：戻す
+                        bmap.pop(s, None)
+                        assignments[eid][s] = a
+                    if trials <= 0:
+                        break
+                if not improved:
+                    break
 
         moves_after = self.calc_score(assignments)["total_moves"]
         self.repair_info = {"moves_before": moves_before, "moves_after": moves_after}

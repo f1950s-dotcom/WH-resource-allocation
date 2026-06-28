@@ -118,6 +118,12 @@ def init_db():
             "VALUES ('min_process_assignment_minutes', '60', "
             "'1工程への最低連続配置時間（分）。ただしその工程の当日作業が完了する場合は適用しない')"
         ))
+        # 連続化リペアで工程切替を減らすために許容する総コスト増加率
+        conn.execute(text(
+            "INSERT OR IGNORE INTO system_conditions (condition_key, condition_value, description) "
+            "VALUES ('repair_cost_budget_rate', '0.03', "
+            "'連続化リペアで工程切替を減らすために許容する総コスト増加率（0=増やさない, 0.03=最大+3%）')"
+        ))
         conn.commit()
 
         # Lightweight migrations for existing databases
