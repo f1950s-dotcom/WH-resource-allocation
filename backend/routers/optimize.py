@@ -109,6 +109,7 @@ def get_optimization_result_detail(date: str, result_id: str, db: Session = Depe
             available_headcount=result.available_headcount,
             assigned_headcount=result.assigned_headcount,
             total_work_hours=float(result.total_work_hours) if result.total_work_hours is not None else None,
+            total_unprocessed=float(result.total_unprocessed) if result.total_unprocessed is not None else None,
         ),
         assignments=[
             OptimizationAssignmentResponse(

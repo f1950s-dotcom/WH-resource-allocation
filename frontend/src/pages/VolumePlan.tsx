@@ -34,11 +34,15 @@ export default function VolumePlan() {
 
   const saveMut = useMutation({
     mutationFn: () => {
-      const planList = SLOTS.map(slot => ({
-        volume_type: tab,
-        time_slot_start: slot,
-        volume: parseFloat(volumeMap[`${tab}__${slot}`] ?? '0') || 0,
-      }));
+      // 入庫・出庫の両方を一度に保存する。タブ切替で入力した内容が
+      // 保存対象から漏れないよう、volumeMap に入っている両タイプを送る。
+      const planList = (['INBOUND', 'OUTBOUND'] as const).flatMap(type =>
+        SLOTS.map(slot => ({
+          volume_type: type,
+          time_slot_start: slot,
+          volume: parseFloat(volumeMap[`${type}__${slot}`] ?? '0') || 0,
+        }))
+      );
       return saveVolumePlans(date, planList);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['volumePlans', date] }),
@@ -116,9 +120,10 @@ export default function VolumePlan() {
                       <input
                         type="number"
                         min="0"
+                        inputMode="decimal"
                         value={volumeMap[key] ?? ''}
                         onChange={e => setVolumeMap(prev => ({ ...prev, [key]: e.target.value }))}
-                        className="w-full text-right border rounded px-2 py-1 text-sm"
+                        className="w-full text-right border rounded px-2 py-1 text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         placeholder="0"
                       />
                     </td>
@@ -138,7 +143,8 @@ export default function VolumePlan() {
         <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="px-6 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50">
           {saveMut.isPending ? '保存中...' : '保存'}
         </button>
-        {saveMut.isSuccess && <span className="self-center text-green-600 text-sm">✓ 保存しました</span>}
+        <span className="self-center text-xs text-gray-400">保存ボタンで入庫・出庫の両方をまとめて保存します</span>
+        {saveMut.isSuccess && <span className="self-center text-green-600 text-sm">✓ 入庫・出庫を保存しました</span>}
       </div>
     </div>
   );

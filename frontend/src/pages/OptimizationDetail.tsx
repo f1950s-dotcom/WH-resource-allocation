@@ -54,10 +54,11 @@ export default function OptimizationDetail() {
 
       {result && (
         <div className="bg-white rounded-lg border p-4 mb-5 grid grid-cols-4 gap-4 text-sm">
-          <div><span className="text-gray-500">期限遵守</span><p className={`font-semibold ${result.is_deadline_met ? 'text-green-600' : 'text-red-500'}`}>{result.is_deadline_met ? '✓ 遵守' : '✗ 超過'}</p></div>
+          <div><span className="text-gray-500">期限遵守</span><p className={`font-semibold ${result.is_deadline_met ? 'text-green-600' : 'text-red-500'}`}>{result.is_deadline_met ? '✓ 遵守' : '✗ 定時超過'}</p></div>
           <div><span className="text-gray-500">総人件費</span><p className="font-semibold">¥{result.total_cost.toLocaleString()}</p></div>
           <div><span className="text-gray-500">うち残業費</span><p className="font-semibold text-orange-500">¥{result.total_overtime_cost.toLocaleString()}</p></div>
           <div><span className="text-gray-500">工程移動回数</span><p className="font-semibold">{result.total_process_moves} 回</p></div>
+          <div><span className="text-gray-500">作業残</span><p className={`font-semibold ${result.total_unprocessed != null && result.total_unprocessed > 0.5 ? 'text-red-500' : 'text-green-600'}`}>{result.total_unprocessed == null ? '—' : result.total_unprocessed > 0.5 ? `あり（${Math.round(result.total_unprocessed).toLocaleString()} 個）` : 'なし'}</p></div>
         </div>
       )}
 

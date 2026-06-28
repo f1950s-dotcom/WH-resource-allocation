@@ -31,6 +31,8 @@ class OptimizationResult(Base):
     assigned_headcount = Column(Integer)
     # 総人時（昼休み除く実働）。WORKスロット数 × スロット時間(時)
     total_work_hours = Column(Numeric(8, 2))
+    # 当日処理しきれなかった作業残（全工程の未処理量合計）。0なら作業残なし
+    total_unprocessed = Column(Numeric(12, 1))
 
 
 class OptimizationAssignment(Base):

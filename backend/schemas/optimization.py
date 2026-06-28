@@ -40,6 +40,7 @@ class OptimizationResultResponse(BaseModel):
     available_headcount: Optional[int] = None
     assigned_headcount: Optional[int] = None
     total_work_hours: Optional[float] = None
+    total_unprocessed: Optional[float] = None
 
 
 class OptimizationResultDetail(BaseModel):

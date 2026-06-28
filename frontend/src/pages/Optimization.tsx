@@ -173,7 +173,15 @@ export default function Optimization() {
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-500">期限遵守</span>
                             <span className={r.is_deadline_met ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
-                              {r.is_deadline_met ? '✓ 遵守' : '✗ 超過'}
+                              {r.is_deadline_met ? '✓ 遵守' : '✗ 定時超過'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm" title="当日処理しきれず残った作業量（全工程の未処理量合計）">
+                            <span className="text-gray-500">作業残</span>
+                            <span className={r.total_unprocessed != null && r.total_unprocessed > 0.5 ? 'text-red-500 font-medium' : 'text-green-600 font-medium'}>
+                              {r.total_unprocessed == null ? '—'
+                                : r.total_unprocessed > 0.5 ? `あり（${Math.round(r.total_unprocessed).toLocaleString()} 個）`
+                                : 'なし'}
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">

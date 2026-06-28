@@ -163,6 +163,11 @@ def init_db():
                 "ALTER TABLE optimization_results ADD COLUMN total_work_hours NUMERIC(8,2)"
             ))
             conn.commit()
+        if "total_unprocessed" not in cols:
+            conn.execute(text(
+                "ALTER TABLE optimization_results ADD COLUMN total_unprocessed NUMERIC(12,1)"
+            ))
+            conn.commit()
 
         # Skill level 1 was 0.70; correct to 0.80 for existing databases
         row = conn.execute(text(

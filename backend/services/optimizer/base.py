@@ -623,6 +623,9 @@ class BaseOptimizer:
             work_slot_count += n_work
         total_work_hours = work_slot_count * self.slot_hours
 
+        # 作業残（未処理量）と完了時刻はフロー再現から一度に求める
+        total_unprocessed, completion_time = self._simulate_fixed(assignments)
+
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         result_id = str(uuid.uuid4())
 
@@ -684,10 +687,11 @@ class BaseOptimizer:
             process_moves_before_repair=(
                 self.repair_info.get("moves_before") if self.repair_info else None
             ),
-            completion_time=self._completion_time(assignments),
+            completion_time=completion_time,
             available_headcount=available_headcount,
             assigned_headcount=assigned_headcount,
             total_work_hours=round(total_work_hours, 2),
+            total_unprocessed=round(total_unprocessed, 1),
         )
         self.db.add(result)
 
