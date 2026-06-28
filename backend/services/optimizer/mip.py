@@ -12,7 +12,7 @@
 import logging
 from typing import Dict, List, Optional
 
-from .base import Assignment, _parse_time, _format_time
+from .base import Assignment, _parse_time
 
 logger = logging.getLogger(__name__)
 
@@ -277,17 +277,41 @@ def solve_mip(opt, objective_type: str,
         solver.Add(short_p >= cum_arr - cum_proc)  # 未処理量（最終時点）
         short_terms.append(short_p)
 
-    # ---- 締切：期限スロット以降は処理不可（締切を過ぎた処理は認めない） ----
-    #   期限後に処理できない分は上の short_p（未処理量）に吸収され、目的関数で
-    #   罰せられる。これにより「締切を厳守できる範囲で最大限処理する」最良解を返す。
-    #   ハードな「期限までに全量処理」を課さないことで INFEASIBLE を回避する。
+    # ---- 締切（must_finish_by）はハード打ち切りにしない ----
+    #   旧実装は「締切時刻以降は当該工程の処理＝0」を課していた。これだと
+    #   定時(17:00)までに終わらない最終工程（棚入れ・梱包）を、残業枠
+    #   (17:00〜20:00)が人員的に空いていても処理できず、残務を残して
+    #   帰す挙動になっていた。
+    #
+    #   運用方針は3段階の優先順位：
+    #     ① 残業なし（定時内）で入出庫の最終工程まで全て終わらせる
+    #     ② 終わらなければ残業して残業最大終了時刻(20:00)までにやり切る
+    #        （残業不可の人は残業枠に配置しない＝availableスロットで担保済み）
+    #     ③ それでも無理なら作業残を残して帰る
+    #   これを実現するため、締切はハード制約として課さず、処理可能範囲は
+    #   各従業員のavailableスロット（残業可否を反映済み）にのみ委ねる。
+    #   ・①は目的関数が残業割増(cost_expr)を嫌うため自然に成立
+    #   ・②は未処理ペナルティ(short)が残業コストより桁違いに重いため成立
+    #   ・③はshortとして許容（最後の逃げ道）
+    #   締切時刻(17:00)は「残業なしで間に合ったか」のKPIとして calc_score の
+    #   is_deadline_met / deadline_violations の判定には引き続き用いる（表示のみ）。
+    #
+    #   ただし「なるべく定時内に終わらせる（①）」を成立させるため、締切時刻
+    #   以降に行う処理量に対してソフトな late ペナルティを課す。コスト目的は
+    #   完了時刻に無関心なので、これが無いと（コストが同じなら）作業を夕方〜
+    #   20:00へ無意味に引き延ばす解が選ばれてしまう。重み階層は
+    #       残務(short) ≫ 締切後処理(late) ≫ 残業割増 ≫ 通常コスト
+    #   とし、(a)定時内完了を最優先、(b)定時で無理なら締切後処理＝実質残業で
+    #   やり切る、(c)それも無理なら残務、の順に選ばれるようにする。
+    late_terms = []
     for p, dl in opt.deadlines.items():
         if cap_base.get(p, 0.0) <= 0:
             continue
         dmin = _parse_time(dl)
         for t in range(T):
             if end_min[t] > dmin:
-                solver.Add(proc[(p, t)] == 0)
+                late_terms.append(proc[(p, t)])
+    sum_late = sum(late_terms) if late_terms else 0
 
     # ---- 残業：n_e, ot_e ----
     n_var, ot_var = {}, {}
@@ -315,8 +339,13 @@ def solve_mip(opt, objective_type: str,
 
     # ---- 目的関数 ----
     if objective_type == "COST":
-        # cost_expr は数十万円オーダー。短期1単位=1e5で十分支配的。
-        solver.Minimize(cost_expr + 1.0e5 * sum_short)
+        # 重み階層：残務(1e5) ≫ 締切後処理(1e3) ≫ 残業割増(cost_expr内) ≫ 通常コスト。
+        #  - sum_late は「定時(17:00)以降に最終工程を処理した量」。コスト目的は
+        #    完了時刻に無関心なため、これが無いと作業を夕方へ無意味に引き延ばす
+        #    解が選ばれる。1e3 により「定時内で終わるなら終わらせる」を優先しつつ、
+        #    残務(1e5)よりは軽いので「残務を残すより残業してでも終わらせる」も成立。
+        #  - 全量が定時内に収まる通常日は sum_late=0 となり、純粋なコスト最小化に戻る。
+        solver.Minimize(cost_expr + 1.0e3 * sum_late + 1.0e5 * sum_short)
     elif objective_type == "MAKESPAN":
         # 「最遅スロットを最小化」する連続変数M＋big-M制約は緩和が弱く、
         # CBCが整数解を1つも見つけられずNOT_SOLVEDになっていた。また
