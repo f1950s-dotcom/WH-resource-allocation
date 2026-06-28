@@ -8,7 +8,10 @@ import {
   getProcesses,
 } from '../../api/client';
 
-const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
+// day_of_week は最適化側(Python weekday)と同じ「月=0, 火=1, …, 日=6」で扱う。
+// 配列の添字がそのまま day_of_week になるため、月始まりで並べる。
+// （以前は日始まりで、保存番号と曜日が1日ずれて表示されていた）
+const DAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
 
 export default function EmployeeDetail() {
   const { id } = useParams<{ id: string }>();
