@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getVolumePlans, saveVolumePlans } from '../api/client';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // JST(YYYY-MM-DD)
 
 function generateSlots(): string[] {
   const slots: string[] = [];

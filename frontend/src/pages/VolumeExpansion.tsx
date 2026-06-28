@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getVolumeExpansions, runVolumeExpansion, getProcesses } from '../api/client';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // JST(YYYY-MM-DD)
 
 const HEAT_COLORS = [
   'bg-white',

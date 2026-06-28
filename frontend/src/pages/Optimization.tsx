@@ -6,7 +6,7 @@ import {
   getOptimizationStatus,
 } from '../api/client';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // JST(YYYY-MM-DD)
 
 const RESULT_LABELS: Record<string, string> = {
   FASTEST: '案A：最速完了',
@@ -108,6 +108,11 @@ export default function Optimization() {
     eng => (results as any[]).some(r => (r.calculation_method ?? 'GREEDY') === eng)
   );
 
+  // この日に勤務条件のある従業員が1人もいない（土日など）と、結果は出るが
+  // 全員未配置になる。原因が分かるようバナーで明示する。
+  const noStaffDay = (results as any[]).length > 0
+    && (results as any[]).every(r => (r.available_headcount ?? 0) === 0);
+
   return (
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-800 mb-1">人員配置最適化提案</h1>
@@ -141,6 +146,14 @@ export default function Optimization() {
           </div>
         )}
       </div>
+
+      {noStaffDay && (
+        <div className="mb-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+          <b>この日は配置できる従業員がいません。</b>
+          選択した日付（曜日）に<b>勤務条件が登録された従業員が1人もいない</b>ため、誰も配置されません。
+          土曜・日曜などを稼働させる場合は、<b>従業員マスタ ＞ 勤務条件</b>でその曜日の勤務を登録してください。
+        </div>
+      )}
 
       {enginesWithResults.length > 0 ? (
         <div className="space-y-8">

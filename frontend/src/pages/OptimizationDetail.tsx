@@ -7,7 +7,7 @@ const PROCESS_COLORS = [
   'bg-pink-500', 'bg-indigo-500', 'bg-red-500', 'bg-teal-500',
 ];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // JST(YYYY-MM-DD)
 
 export default function OptimizationDetail() {
   const { resultId } = useParams<{ resultId: string }>();

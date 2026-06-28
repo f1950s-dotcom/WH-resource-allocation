@@ -6,7 +6,7 @@ import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // JST(YYYY-MM-DD)
 
 const PROCESS_COLORS = [
   'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',

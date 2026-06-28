@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getVolumePlans, getVolumeExpansions, getOptimizationResults, getShifts } from '../api/client';
 
 export default function Home() {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }));
 
   const { data: plans } = useQuery({ queryKey: ['volumePlans', date], queryFn: () => getVolumePlans(date), enabled: !!date });
   const { data: expansions } = useQuery({ queryKey: ['expansions', date], queryFn: () => getVolumeExpansions(date), enabled: !!date });
