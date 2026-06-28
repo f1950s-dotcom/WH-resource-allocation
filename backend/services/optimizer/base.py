@@ -124,6 +124,10 @@ class BaseOptimizer:
             e for e in self.employees
             if e.employee_id in self.work_conditions
         ]
+        # 出社可能人数は人員マスタ（その日の勤務条件保有者）から決まる固定値。
+        # 計算手法では変わらない。_dismiss_expensive_workers が active_employees
+        # を縮めるため、結果出力にはこのスナップショットを用いる（手法間で不変）。
+        self.available_headcount = len(self.active_employees)
 
         # Build employee available slots (before breaks).
         # overtime_available=True の場合、通常の work_end_time を超えて
@@ -607,7 +611,9 @@ class BaseOptimizer:
         #  - 出社可能HC：当日の勤務条件を持つ従業員数（出社しうる人数）
         #  - 実出社HC ：実際に1スロット以上WORK配置された人数
         #  - 総人時   ：WORKスロット数 × スロット時間（昼休み等の非WORKは除外）
-        available_headcount = len(self.active_employees)
+        # 出社可能人数は __init__ 時点のマスタ確定値を使う（帰宅処理で
+        # active_employees が縮んでも変わらない＝計算手法に依存しない）。
+        available_headcount = self.available_headcount
         work_slot_count = 0
         assigned_headcount = 0
         for ea in assignments.values():
