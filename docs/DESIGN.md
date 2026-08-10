@@ -447,6 +447,157 @@ cost_expr = Σ_e [ wage_e·slot_hours·n_e  +  wage_e·slot_hours·(rate_ot − 
 
 ---
 
-_本書は実装（`backend/services/optimizer/`, `backend/models/`, `frontend/src/`）と対で保守する。
+---
+
+## 15. 処理ロジック詳細（進捗グラフ・フロー・スコア・ヒューリスティック）
+
+> 第14-7で「コード併読が要る」とした箇所を、他環境でも同一挙動を再現できるよう
+> 実アルゴリズムとして書き起こす。**すべて「唯一のフロー計算」を共有**することが要点。
+
+### 15-0. 最重要の落とし穴：フロー計算は1つに統一する
+
+進捗グラフ・最適化・シフト画面が**別々にフローを再現すると「残（backlog）」が食い違う**。
+本システムはバックエンドの1ロジック（下記）を単一の真実とし、フロントは**表示するだけ**にしている。
+再構築時もこの原則を必ず守ること。共通要素は次の3点：
+
+1. **物量は `volume_expansions`（根元工程の作業量）のみを入力**とする。
+2. **能力** `capacity = base_productivity × skill_rate(level) × transition_factor × slot_hours`。
+   `transition_factor = 1 − penalty_rate`（直前スロットが別工程の就労）／それ以外は `1.0`。
+3. **下流へは15分ラグで伝播**：`incoming[下流][次スロット] += throughput × conv_rate[下流]`。
+
+`slot_hours = 15/60 = 0.25`。`skill_rate` 既定 {1:0.8, 2:1.0, 3:1.2}（未設定levelは実装によりデフォルト1〜2）。
+
+### 15-1. 進捗グラフ生成 `compute_flow_report(date, result_id)`（`flow_report.py`）
+
+確定済み割当（`optimization_assignments`）から、工程×スロットの
+`incoming / processed / backlog / cum_arrived / cum_processed / capacity / utilization` を返す。
+
+```
+# 1) 準備
+processes = 有効な工程
+upstream_of[p]  = 接続 to→from
+downstream_of[p]= 接続 from→[to]
+order = processesを上流からのトポロジカル順にソート
+conv_rate[p], root_volume[p][slot]（=volume_expansions）, skill_rates, skills, base_prod を読み込む
+
+# 2) 工程移動直後スロットの検出（ペナルティ有効時）
+各従業員の割当を時刻順に並べ、
+  直前がWORK かつ 別工程 → transition_slots に (emp, slot) を追加
+
+# 3) スロット別の実効能力を積み上げ
+for a in WORK割当:
+    level = skills[emp][a.process] (既定2)
+    tf = (1 - penalty_rate) if (emp,a.slot) in transition_slots else 1.0
+    capacity[a.process][a.slot] += base_prod[a.process] * skill_rates[level] * tf * SLOT_HOURS
+
+# 4) 全スロット = 物量到着スロット ∪ 割当スロット を時刻順に前進
+backlog[p]=0
+for slot in all_slots:
+    for p in order:
+        inc = incoming[p][slot]（初期は root_volume）
+        cum_arrived[p]+=inc ; backlog[p]+=inc
+        cap = capacity[p][slot]
+        throughput = min(backlog[p], cap)
+        backlog[p]-=throughput ; cum_processed[p]+=throughput
+        if throughput>0 and 次スロットあり:
+            for dn in downstream_of[p]:
+                incoming[dn][次スロット] += throughput * conv_rate[dn]   # 15分ラグ
+        utilization = throughput/cap  (cap=0 のスロットは None＝人未配置)
+        # 稼働があった工程だけ結果に行を追加
+```
+
+`get_flow_report_for_date` は「選択中（無ければ最新）の結果」を対象に上記を返す。
+
+### 15-2. シフトデータ生成 `build_shift_data`（`shift_generator.py`）
+
+割当から**従業員別タイムライン**と**工程別タイムライン**を構築（表示専用・計算なし）。
+- `employees[]`: 各人の `slots[slot] = {process, slot_type(WORK/LUNCH_BREAK/…), is_overtime, slot_cost}`。
+- `processes[]`: 各工程の `slots[slot] = [その工程に就く従業員名…]`（WORKのみ）。
+
+### 15-3. フロー・シミュレーション（最適化内部の2種）
+
+**(a) `_run_flow(assignments)`** — GREEDYの配置生成本体。上流→下流、スロット前進。
+```
+all_slots = 全従業員のavailable ∪ 物量到着スロット
+for slot in all_slots:
+    backlog[p]+=incoming[p][slot]
+    # 需要（人時）→ quota配分（ボトルネック均衡）
+    demand[p] = backlog[p] / (base_prod[p]*slot_hours)   # работあるpのみ
+    quotas = _demand_to_quotas(demand)
+      = 稼働pに最低1人保証し、残り人員を demand 比で按分（上流独占を防ぐ）
+    # 第1パス：quota人数を _emp_sort_key 昇順で配置し throughput 集計
+    # 第2パス（モップアップ）：残backlogがあり空き人員がいれば、
+    #     残をカバーできるまで追加配置（低スキルで見積割れした分を吸収）
+    backlog[p]-=throughput
+    下流へ throughput*conv_rate を次スロットへ伝播
+return Σ backlog   # 総未処理量
+```
+`_demand_to_quotas`：`guaranteed=min(稼働工程数, 人数)`、余りを `demand[p]/Σdemand` で按分、
+上限 `ceil(demand[p])`。
+
+**(b) `_simulate_fixed(assignments)`** — 配置固定でフローを前進し `(総未処理量, 完了時刻)` を返す。
+リペアの採否判定（`_flow_backlog_fixed`）と結果保存の完了時刻（`_completion_time`）に使用。
+能力・ラグの式は 15-0 と同一。完了時刻＝「処理が行われた最後のスロットの終了時刻」。
+
+### 15-4. スコアリング `calc_score`（`base.py`）
+
+```
+for 各従業員（時刻順）:
+    work_count 累積で残業判定 is_ot = (work_count*15 >= overtime_threshold_minutes)
+    base = wage*slot_hours ; cost = base*rate_ot if is_ot else base
+    total_cost += cost ; total_overtime_cost += base*(rate_ot-1) if is_ot
+    直前WORKと工程が変われば total_moves += 1（休憩を挟むと prev=None にリセット）
+for 締切のある工程 p:
+    その工程の最終WORKスロット終了時刻 > 締切 → deadline_violations[p] = 超過(時間)
+is_deadline_met = (違反なし)
+```
+補助：`_is_overtime_slot`＝当該スロット**より前**のWORK数×15分 ≥ 閾値。
+`_calc_slot_cost`＝残業なら `base×rate_ot`。`_transition_factor`＝直前が別工程WORKなら `1−penalty_rate`。
+
+### 15-5. 昼休み割当 `_assign_lunch_breaks`
+
+従業員を3群に分け、開始を **11:30 / 11:45 / 12:00** とずらして `LUNCH_BREAK` を
+`lunch_slots_count` 分だけ確保（availableスロットにある場合のみ）。ピーク人員の谷を防ぐ。
+
+### 15-6. ヒューリスティック本体と改善エンジン
+
+**案別の選定キー `_emp_sort_key`（昇順で優先）**
+- FASTEST：`(-skill, wage)`（高スキル→安い順）。目的 `_objective = 最遅終了*1e6 + cost`。
+- CHEAPEST：`(cost_per_unit, -skill)`、`cost_per_unit = 実効時給 / skill_rate`。
+  **時給でなく「処理1個あたりコスト」で選ぶ**（低時給・低生産性で総コストが逆に増える罠を回避）。
+
+**改善エンジン `_refine`（method別）**
+- `ANNEALING` `_refine_annealing`（既定6000反復）：**人員計画（席）を固定**し、1席を別の
+  適格者へ置換。悪化も `exp(-Δ/T)` で確率受理、`T*=0.9995` で冷却。目的は `_objective`。
+- `ORTOOLS` `_refine_ortools`（既定10秒）：**CP-SAT**で各席に最安の適格者を割当（残業を凸コストで
+  モデル化）。解けなければ現状維持。※これは席選択の最適化で、MIP本体(CBC)とは別。
+- `GREEDY`：サブクラス固有。CHEAPESTは `_local_search_cheapest`（最高コスト割当を安い人へ置換、最大200回）。
+
+**帰宅後処理 `_dismiss_expensive_workers`（既定 上位8人）**
+時給降順で「その人を外して再フローしてもコスト改善 かつ 総未処理量が増えない」なら帰宅させる。
+
+### 15-7. `run()` の全体順序（FASTEST / CHEAPEST 共通）
+
+```
+assignments = None
+if method != "GREEDY":
+    assignments = solve_mip_isolated(self, "MAKESPAN"|"COST")   # 子プロセス隔離
+if assignments is None:                       # GREEDY もしくは MIP失敗フォールバック
+    assignments = 空 → _assign_lunch_breaks → _run_flow
+    → _refine（ANNEALING/ORTOOLS）または _local_search_cheapest（GREEDY・CHEAPEST）
+    → _dismiss_expensive_workers
+_repair_continuity(assignments)               # 3フェーズ（第6-6 / 14-5）
+score = calc_score(assignments)
+_save_result(assignments, score)              # available/assigned_headcount, total_unprocessed 等を保存
+```
+
+> **再現の勘所**：15-0 のフロー式（能力＝生産性×スキル率×移動係数×0.25、下流15分ラグ、
+> throughput=min(backlog,能力)）を進捗グラフ・最適化・完了時刻で**必ず同一実装**にすること。
+> ここがズレると「画面の残と最適化の残が合わない」という今回の不整合が再発する。
+
+---
+
+_本書は実装（`backend/services/optimizer/`, `backend/services/flow_report.py`,
+`backend/services/shift_generator.py`, `backend/models/`, `frontend/src/`）と対で保守する。
 挙動を変えたら本書・`docs/user_guide.html`・GitHub Pages を同期すること。
 特に第13章は「同じ失敗を繰り返さない」ための記録なので、修正で新たな決着がついたら必ず追記すること。_
